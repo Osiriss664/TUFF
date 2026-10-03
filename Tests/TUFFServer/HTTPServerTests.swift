@@ -783,6 +783,12 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
+    @Test func reasoningDropsItsThinkTags() {
+        #expect(ServerCompletion.trimmedReasoning("Search first.\n</think>\n\n") == "Search first.")
+        #expect(ServerCompletion.trimmedReasoning("<think>\nA </think> B") == "A </think> B")
+        #expect(ServerCompletion.trimmedReasoning("\n</think>") == "")
+    }
+
     @Test func pipelinedStreamingThenHealthResponsesRemainOrdered() async throws {
         let backend = PipelinedRequestBackend()
         let server = TUFFHTTPServer(

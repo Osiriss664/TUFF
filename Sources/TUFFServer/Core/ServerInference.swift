@@ -9,6 +9,16 @@ public enum ServerInferenceEvent: Equatable, Sendable {
 }
 
 public struct ServerCompletion: Equatable, Sendable {
+    /// The thought channel without the tags that open and close it. The
+    /// ChatML decoder routes the `</think>` token's own text into the thought
+    /// it ends, which is right for the engine but noise for a client.
+    static func trimmedReasoning(_ text: String) -> String {
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("<think>") { trimmed.removeFirst("<think>".count) }
+        if trimmed.hasSuffix("</think>") { trimmed.removeLast("</think>".count) }
+        return trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public let content: String
     /// The model's thought channel, returned as `reasoning_content`.
     public let reasoning: String
@@ -1173,7 +1183,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         completed = true
         return ServerCompletion(
             content: state.content,
-            reasoning: state.reasoning,
+            reasoning: ServerCompletion.trimmedReasoning(state.reasoning),
             toolCalls: state.calls,
             finishReason: reason,
             usage: OpenAIUsage(promptTokens: result.prefillTokens,
