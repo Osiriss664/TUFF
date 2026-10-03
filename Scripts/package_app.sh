@@ -75,6 +75,7 @@ required_binaries=(
   TUFFCLI
   TUFFRepack
   TUFFServer
+  TUFFResearch
 )
 required_bundles=(
   TUFF_TUFFEngine.bundle
@@ -136,7 +137,7 @@ install -m 0755 "$signed_binaries/TUFFDecodeService" \
 mkdir -p "$app/Contents/Resources/bin"
 install -m 0755 "$signed_binaries/TUFFCommand" \
   "$app/Contents/Resources/bin/tuff"
-for name in TUFFCLI TUFFRepack TUFFServer; do
+for name in TUFFCLI TUFFRepack TUFFServer TUFFResearch; do
   install -m 0755 "$signed_binaries/$name" \
     "$app/Contents/Resources/bin/$name"
 done
@@ -266,7 +267,7 @@ if [[ "$main_architectures" != "arm64" || "$service_architectures" != "arm64" ]]
   echo "release app must contain arm64-only executables" >&2
   exit 1
 fi
-for name in tuff TUFFCLI TUFFRepack TUFFServer; do
+for name in tuff TUFFCLI TUFFRepack TUFFServer TUFFResearch; do
   if [[ "$(lipo -archs "$app/Contents/Resources/bin/$name")" != "arm64" ]]; then
     echo "release CLI must contain arm64-only executable: $name" >&2
     exit 1

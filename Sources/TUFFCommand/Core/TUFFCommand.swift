@@ -56,6 +56,7 @@ public enum TUFFCommand {
       tuff prompt <text> [--model <name|path>] [generation options]
       tuff load [model]
       tuff serve [--default-model <name>] [--unload-after <seconds>] [--port <port>]
+      tuff research <question> [--model <name>] [--server <url>] [--sandbox <url>]
       tuff --version
 
     commands:
@@ -64,11 +65,14 @@ public enum TUFFCommand {
       serve    Start the local OpenAI-compatible server in the foreground. Every
                installed model is served and loads when a request names it;
                `default` means the selected app model.
+      research Research a question on the web with a running TUFF server and
+               the Apple container web sandbox. See docs/WEB_RESEARCH.md.
 
     model names include gemma4-e2b, gemma4-e4b, gemma4-12b-qat, gemma4,
     qwen36, qwen38-flash-next, gpt-oss-20b, gpt-oss-120b, and minimax-m2.7.
 
-    Run `tuff prompt --help` or `tuff serve --help` for command-specific options.
+    Run `tuff prompt --help`, `tuff serve --help` or `tuff research --help` for
+    command-specific options.
     """
 
     public static func plan(
@@ -118,6 +122,12 @@ public enum TUFFCommand {
                 applicationSupportURL: applicationSupportURL,
                 selectedModel: selectedModel,
                 fileExists: fileExists)
+        case "research":
+            // The research loop talks to a running server, which resolves
+            // models itself, so its arguments pass through unchanged.
+            let child = try bundledExecutable(
+                named: "TUFFResearch", beside: executableURL, fileExists: fileExists)
+            return .run(executableURL: child, arguments: remaining)
         default:
             throw TUFFCommandError.unknownCommand(command)
         }

@@ -157,6 +157,31 @@ struct TUFFCommandTests {
         #expect(parts.count == 3 && parts.allSatisfy { Int($0) != nil })
     }
 
+    @Test func researchRunsTheBundledResearchLoop() throws {
+        let packaged = URL(fileURLWithPath: "/Applications/TUFF.app/Contents/Resources/bin/tuff")
+        let plan = try TUFFCommand.plan(
+            arguments: ["research", "Who maintains Apple container?", "--max-steps", "4"],
+            executableURL: packaged,
+            currentDirectoryURL: repository,
+            applicationSupportURL: appSupport,
+            fileExists: { $0 == "/Applications/TUFF.app/Contents/Resources/bin/TUFFResearch" })
+        guard case .run(let child, let arguments) = plan else {
+            Issue.record("expected the research loop")
+            return
+        }
+        #expect(child.path == "/Applications/TUFF.app/Contents/Resources/bin/TUFFResearch")
+        #expect(arguments == ["Who maintains Apple container?", "--max-steps", "4"])
+
+        #expect(throws: TUFFCommandError.missingBundledExecutable("TUFFResearch")) {
+            try TUFFCommand.plan(
+                arguments: ["research", "question"],
+                executableURL: packaged,
+                currentDirectoryURL: repository,
+                applicationSupportURL: appSupport,
+                fileExists: { _ in false })
+        }
+    }
+
     @Test func serveRoutesEveryInstalledModel() throws {
         // A packaged app serves the models Application Support holds, and
         // `default` follows the model selected in the app.

@@ -15,6 +15,7 @@ let package = Package(
         .executable(name: "TUFF", targets: ["TUFFMac"]),
         .executable(name: "TUFFDecodeService", targets: ["TUFFDecodeService"]),
         .executable(name: "TUFFServer", targets: ["TUFFServer"]),
+        .executable(name: "TUFFResearch", targets: ["TUFFResearch"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -149,6 +150,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "TUFFResearchCore",
+            dependencies: ["TUFFModelCatalog"],
+            path: "Sources/TUFFResearch/Core"
+        ),
+        .executableTarget(
+            name: "TUFFResearch",
+            dependencies: ["TUFFResearchCore"],
+            path: "Sources/TUFFResearch/Command"
+        ),
+        .target(
             name: "TUFFValidationSupport",
             dependencies: ["TUFFEngine"],
             path: "Sources/TUFFValidation/Support"
@@ -240,6 +251,11 @@ let package = Package(
                 "TUFFModelCatalog",
             ],
             path: "Tests/TUFFAppServer"
+        ),
+        .testTarget(
+            name: "TUFFResearchTests",
+            dependencies: ["TUFFResearchCore"],
+            path: "Tests/TUFFResearch"
         ),
         .testTarget(
             name: "TUFFAppUpdaterTests",
