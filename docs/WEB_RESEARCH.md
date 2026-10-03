@@ -120,7 +120,7 @@ What this does not cover:
 - Anything the model reads can appear in the report, including text a page
   planted. Treat the report as you would any web content.
 - Search queries and page requests leave from your network, so sites see your
-  IP address.
+  IP address, unless you use the proxy option (see [Proxy](#proxy)).
 - The sandbox does not filter by domain. To restrict where it can go, run an
   egress proxy in another container and attach the sandbox to an `--internal`
   network.
@@ -150,6 +150,71 @@ Then Cloudflare (1.1.1.1) and Quad9 (9.9.9.9) see which sites the research
 looks up, your own DNS filtering no longer applies to the sandbox, and on a
 network that blocks outside DNS every fetch fails with `dns_error`.
 
+### Proxy
+
+The sandbox can send every connection through a SOCKS5 or HTTP proxy, so
+websites and the search engine see the proxy's address instead of yours.
+It is off unless you turn it on:
+
+```sh
+Scripts/research_sandbox.sh start --proxy socks5://10.64.0.1:1080
+```
+
+`TUFF_RESEARCH_PROXY=socks5://HOST:PORT` does the same. `http://HOST:PORT`
+uses an HTTP proxy's CONNECT method. Most VPN services offer a SOCKS5
+server (Mullvad's is `socks5://10.64.0.1:1080` while its VPN is connected),
+Tor offers one on port 9050, and `ssh -D` turns any server you can log in to
+into one.
+
+With the proxy on:
+
+- **The firewall allows the proxy and nothing else.** The VM loads
+  `firewall-proxy.nft`, which refuses every outbound connection except to the
+  proxy's address and port. If the proxy is down, fetches fail; nothing goes
+  out the normal way.
+- **No DNS leaks.** The VM's DNS exception is removed. The sandbox looks up
+  names with DNS-over-HTTPS sent through the proxy, to Cloudflare
+  (`https://1.1.1.1/dns-query`) by default; set `TUFF_RESEARCH_DOH` to
+  another https URL on a public IP address, such as
+  `https://9.9.9.9/dns-query`. The proxy's own name is looked up once, through
+  the Mac, when the sandbox starts, so give it as an IP address to avoid even
+  that.
+- **The address checks still run.** Every DNS answer must still be public,
+  and the proxy is asked to connect to that checked address, never to a name.
+  So a page cannot use the proxy to reach the Mac or your local network.
+  `http://` pages go through a CONNECT tunnel too, which some HTTP proxies
+  only allow to port 443.
+- **The login stays out of the model's reach.** If the proxy needs a username
+  and password, keep them in the Keychain:
+
+  ```sh
+  security add-generic-password -s tuff-research-proxy -a YOUR_USERNAME -w
+  ```
+
+  `security` asks for the password, so it never appears in your shell
+  history. `start` reads the item and passes it to the VM through the
+  environment, not the command line. `TUFF_RESEARCH_PROXY_USER` and
+  `TUFF_RESEARCH_PROXY_PASSWORD` work too. A URL with a login in it is
+  refused. Error messages the model sees never name the proxy or the login.
+
+What the proxy hides depends on the proxy. A SOCKS5 or plain HTTP proxy
+connection is not encrypted, so your network can see the login and which
+addresses you connect to. Use a proxy you reach through an encrypted tunnel:
+a VPN provider's SOCKS server inside its VPN, Tor on your Mac, or `ssh -D`.
+The proxy operator sees which sites the research visits. SearXNG, when set,
+is still reached directly, not through the proxy.
+
+A proxy running on your Mac (Tor, `ssh -D`) must listen on an address the VM
+can reach, such as the Mac's address on the container network (the VM's
+gateway), not only 127.0.0.1. The firewall then opens that one port on the
+Mac.
+
+**A VPN app on the Mac** probably covers the sandbox without this option,
+because the VM's traffic leaves through the Mac's connection. That is not
+something the sandbox can check or enforce, and without the VPN app's kill
+switch, traffic goes out unprotected while the VPN is down. The proxy option
+fails closed instead.
+
 ## Testing the boundaries
 
 ### Unwanted connections
@@ -171,6 +236,13 @@ tries every TCP port on the Mac: only DNS (53) may answer, and only when the
 VM uses the Mac for DNS. It
 checks that the API refuses a foreign `Host` header and a browser-style POST,
 and that a public page still loads.
+
+With the proxy on, it also checks that the VM cannot reach public addresses
+or look up names without the proxy, that only the proxy's port answers on the
+Mac when the proxy runs there, and it compares the address websites see
+(from https://api.ipify.org) with the Mac's own. The same address is only a
+note, since a VPN on the Mac can carry the proxy and leave from the same
+address.
 
 ### Prompt injection
 

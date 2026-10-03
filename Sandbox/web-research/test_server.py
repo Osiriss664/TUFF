@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -400,6 +401,296 @@ class PinnedTransportTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
 
 
+class _RelayProxy:
+    """A small SOCKS5 or HTTP CONNECT proxy on loopback that records what it was
+    asked for and relays to it."""
+
+    def __init__(self, kind, username="", password=""):
+        self.kind, self.username, self.password = kind, username, password
+        self.requests = []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def close(self):
+        self.listener.close()
+
+    def _serve(self):
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(client,), daemon=True).start()
+
+    def _handle(self, client):
+        try:
+            target = self._socks(client) if self.kind == "socks5" else self._connect(client)
+            if target is None:
+                return
+            self.requests.append(target)
+            upstream = socket.create_connection(target, timeout=5)
+            if self.kind == "socks5":
+                client.sendall(b"\x05\x00\x00\x01" + bytes(4) + b"\x00\x00")
+            else:
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            relay = threading.Thread(target=self._pipe, args=(upstream, client), daemon=True)
+            relay.start()
+            self._pipe(client, upstream)
+            relay.join(5)
+            upstream.close()
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+    @staticmethod
+    def _pipe(source, sink):
+        try:
+            while data := source.recv(65536):
+                sink.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                sink.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def _socks(self, client):
+        version, count = client.recv(2)
+        methods = client.recv(count)
+        if self.username:
+            if 2 not in methods:
+                client.sendall(b"\x05\xff")
+                return None
+            client.sendall(b"\x05\x02")
+            _, size = client.recv(2)
+            user = client.recv(size)
+            size = client.recv(1)[0]
+            secret = client.recv(size)
+            ok = (user.decode(), secret.decode()) == (self.username, self.password)
+            client.sendall(b"\x01\x00" if ok else b"\x01\x01")
+            if not ok:
+                return None
+        else:
+            client.sendall(b"\x05\x00")
+        _, command, _, kind = client.recv(4)
+        if kind != 1:
+            client.sendall(b"\x05\x08\x00\x01" + bytes(6))
+            return None
+        address = socket.inet_ntoa(client.recv(4))
+        port = int.from_bytes(client.recv(2), "big")
+        return (address, port)
+
+    def _connect(self, client):
+        header = b""
+        while not header.endswith(b"\r\n\r\n"):
+            header += client.recv(1)
+        lines = header.decode().split("\r\n")
+        if self.username:
+            expected = "Proxy-Authorization: Basic " + server.base64.b64encode(
+                f"{self.username}:{self.password}".encode()).decode()
+            if expected not in lines:
+                client.sendall(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+                return None
+        address, port = lines[0].split()[1].rsplit(":", 1)
+        return (address, int(port))
+
+
+class ProxyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _DripHandler)
+        cls.httpd.daemon_threads = True
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def through(self, kind, username="", password="", proxy_username=None, proxy_password=None):
+        relay = _RelayProxy(kind, username, password)
+        self.addCleanup(relay.close)
+        proxy = server.Proxy(kind, "127.0.0.1", relay.port,
+                             username if proxy_username is None else proxy_username,
+                             password if proxy_password is None else proxy_password)
+        target = server.Target("http", "pinned.invalid", self.port, "/", "127.0.0.1")
+        with unittest.mock.patch.object(server, "PROXY", proxy):
+            response = server.pinned_transport("GET", target, {"Host": "pinned.invalid"}, None,
+                                               deadline=5)
+        return relay, response
+
+    def test_socks5_relays_to_the_checked_address(self):
+        relay, response = self.through("socks5")
+        self.assertEqual((response.status, response.body), (200, b"y" * 1000))
+        self.assertEqual(relay.requests, [("127.0.0.1", self.port)])
+
+    def test_socks5_login(self):
+        relay, response = self.through("socks5", "alex", "s3cret")
+        self.assertEqual(response.status, 200)
+
+    def test_http_connect_relays_to_the_checked_address(self):
+        relay, response = self.through("http", "alex", "s3cret")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(relay.requests, [("127.0.0.1", self.port)])
+
+    def test_refused_logins_never_show_the_login_or_the_proxy(self):
+        for kind in ("socks5", "http"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(ToolError) as caught:
+                    self.through(kind, "alex", "s3cret", proxy_password="wrong-pw-123")
+                message = caught.exception.message
+                self.assertIn("refused the login", message)
+                for secret in ("alex", "wrong-pw-123", "s3cret", "127.0.0.1"):
+                    self.assertNotIn(secret, message)
+
+    def test_missing_login_is_reported(self):
+        for kind in ("socks5", "http"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(ToolError) as caught:
+                    self.through(kind, "alex", "s3cret", proxy_username="", proxy_password="")
+                self.assertIn("wants a login", caught.exception.message)
+
+    def test_unreachable_proxy_never_shows_its_address(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        proxy = server.Proxy("socks5", "127.0.0.1", port)
+        target = server.Target("http", "pinned.invalid", self.port, "/", "127.0.0.1")
+        with unittest.mock.patch.object(server, "PROXY", proxy):
+            with self.assertRaises(ToolError) as caught:
+                server.pinned_transport("GET", target, {}, None, deadline=5)
+        self.assertIn("could not reach the proxy", caught.exception.message)
+        self.assertNotIn(str(port), caught.exception.message)
+
+
+class ProxySettingTests(unittest.TestCase):
+    def test_accepted_proxy_urls(self):
+        proxy = server.parse_proxy("socks5://10.64.0.1:1080")
+        self.assertEqual((proxy.scheme, proxy.address, proxy.port), ("socks5", "10.64.0.1", 1080))
+        proxy = server.parse_proxy("http://proxy.example:3128/", "203.0.113.9", "u", "p")
+        self.assertEqual((proxy.scheme, proxy.address, proxy.port), ("http", "203.0.113.9", 3128))
+
+    def test_refused_proxy_urls(self):
+        for url in ("socks4://1.2.3.4:1080", "https://1.2.3.4:443", "socks5://1.2.3.4",
+                    "socks5://user:pw@1.2.3.4:1080", "http://1.2.3.4:3128/path",
+                    "socks5://proxy.example:1080", "socks5://1.2.3.4:99999"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    server.parse_proxy(url)
+
+    def test_login_never_shows_in_repr(self):
+        proxy = server.Proxy("socks5", "1.2.3.4", 1080, "alex", "s3cret")
+        self.assertNotIn("s3cret", repr(proxy))
+        self.assertNotIn("alex", repr(proxy))
+
+    def test_login_is_taken_out_of_the_environment(self):
+        environment = {"TUFF_RESEARCH_PROXY": "socks5://proxy.example:1080",
+                       "TUFF_RESEARCH_PROXY_ADDRESS": "198.51.100.7",
+                       "TUFF_RESEARCH_PROXY_USER": "alex",
+                       "TUFF_RESEARCH_PROXY_PASSWORD": "s3cret"}
+        with unittest.mock.patch.dict(os.environ, environment):
+            proxy = server.proxy_from_environment()
+            for name in ("TUFF_RESEARCH_PROXY_USER", "TUFF_RESEARCH_PROXY_PASSWORD",
+                         "TUFF_RESEARCH_PROXY_ADDRESS"):
+                self.assertNotIn(name, os.environ)
+        self.assertEqual((proxy.address, proxy.username, proxy.password),
+                         ("198.51.100.7", "alex", "s3cret"))
+
+    def test_off_without_a_proxy(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(server.proxy_from_environment())
+
+    def test_doh_server_must_be_a_public_https_address(self):
+        self.assertEqual(server.doh_target("https://1.1.1.1/dns-query").address, "1.1.1.1")
+        for url in ("http://1.1.1.1/dns-query", "https://cloudflare-dns.com/dns-query",
+                    "https://192.168.1.1/dns-query"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    server.doh_target(url)
+
+
+def dns_reply(query, records, rcode=0):
+    """A DNS reply to `query` with `records` of (type, rdata), the first a CNAME
+    pointing at the name with compression, as resolvers send them."""
+    query_id = query[:2]
+    question = query[12:]
+    answer = b""
+    for kind, data in records:
+        answer += b"\xc0\x0c" + server.struct.pack("!HHIH", kind, 1, 60, len(data)) + data
+    header = query_id + server.struct.pack("!HHHHH", 0x8180 | rcode, 1, len(records), 0, 0)
+    return header + question + answer
+
+
+class DoHTests(unittest.TestCase):
+    def transport(self, answers, status=200, rcode=0):
+        calls = []
+
+        def send(method, target, headers, body, deadline=None):
+            calls.append((method, target, headers, body))
+            record_type = server.struct.unpack("!H", body[-4:-2])[0]
+            return Response(status, {"content-type": "application/dns-message"},
+                            dns_reply(body, answers.get(record_type, []), rcode))
+        return send, calls
+
+    def test_resolves_a_and_aaaa_through_the_transport(self):
+        cname = (5, b"\x03www\xc0\x0c")
+        send, calls = self.transport({
+            1: [cname, (1, bytes([93, 184, 216, 34]))],
+            28: [(28, socket.inet_pton(socket.AF_INET6, "2606:2800:220:1::1"))]})
+        addresses = server.doh_resolver("example.com", 443, transport=send,
+                                        target=server.doh_target())
+        self.assertEqual(addresses, ["93.184.216.34", "2606:2800:220:1::1"])
+        self.assertEqual([c[0] for c in calls], ["POST", "POST"])
+        self.assertTrue(all(c[1].address == "1.1.1.1" for c in calls))
+
+    def test_private_answers_are_still_refused(self):
+        send, _ = self.transport({1: [(1, bytes([127, 0, 0, 1]))]})
+        resolve = lambda host, port: server.doh_resolver(host, port, transport=send,
+                                                         target=server.doh_target())
+        with self.assertRaises(ToolError) as caught:
+            server.check_url("http://localtest.me/", resolve)
+        self.assertEqual(caught.exception.code, "blocked_address")
+
+    def test_unknown_names_and_errors(self):
+        send, _ = self.transport({}, rcode=3)
+        with self.assertRaises(ToolError) as caught:
+            server.doh_resolver("nothing.invalid", 443, transport=send, target=server.doh_target())
+        self.assertEqual(caught.exception.code, "dns_error")
+        send, _ = self.transport({}, status=500)
+        with self.assertRaises(ToolError) as caught:
+            server.doh_resolver("example.com", 443, transport=send, target=server.doh_target())
+        self.assertEqual(caught.exception.code, "dns_error")
+
+    def test_reply_to_another_query_is_refused(self):
+        query_id, query = server.dns_query("example.com", 1)
+        reply = dns_reply(query, [(1, bytes(4))])
+        with self.assertRaises(ToolError):
+            server.dns_answers(reply, (query_id + 1) % 65536, 1)
+
+    def test_malformed_replies_are_dns_errors(self):
+        query_id, query = server.dns_query("example.com", 1)
+        reply = dns_reply(query, [(1, bytes([1, 2, 3, 4]))])
+        for broken in (reply[:5], reply[:-2], reply[:12] + b"\x3f" * 20):
+            with self.subTest(size=len(broken)):
+                with self.assertRaises(ToolError):
+                    server.dns_answers(broken, query_id, 1)
+
+    def test_address_literals_need_no_lookup(self):
+        def never(*args, **kwargs):
+            raise AssertionError("looked up a literal")
+        self.assertEqual(server.doh_resolver("93.184.216.34", 80, transport=never), ["93.184.216.34"])
+
+    def test_invalid_names_are_dns_errors(self):
+        for host in ("a..b", "x" * 64 + ".com", ("a." * 130) + "com"):
+            with self.subTest(host=host[:20]):
+                with self.assertRaises(ToolError):
+                    server.dns_query(host, 1)
+
+
 class InjectionFixtureTests(unittest.TestCase):
     """The injection fixtures only test the model if extraction keeps the
     planted text, so check that it survives."""
@@ -453,6 +744,11 @@ class HTTPAPITests(unittest.TestCase):
 
     def test_health(self):
         self.assertEqual(self.call("GET", "/health"), (200, {"status": "ok"}))
+
+    def test_health_names_the_proxy_kind_only(self):
+        proxy = server.Proxy("socks5", "198.51.100.7", 1080, "alex", "s3cret")
+        with unittest.mock.patch.object(server, "PROXY", proxy):
+            self.assertEqual(self.call("GET", "/health"), (200, {"status": "ok", "proxy": "socks5"}))
 
     def test_fetch_round_trip(self):
         status, payload = self.call("POST", "/v1/fetch", {"url": "https://example.com/a"})

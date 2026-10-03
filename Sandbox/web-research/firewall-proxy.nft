@@ -1,0 +1,20 @@
+# Outbound rules for the web research VM when the proxy option is on, loaded
+# by entrypoint.sh instead of firewall.nft. Nothing may leave the VM except
+# connections to the proxy, which entrypoint.sh adds as one rule for its
+# address and port (and the SearXNG exception, when set). There is no DNS
+# exception: names are looked up with DNS-over-HTTPS through the proxy.
+# Replies on connections the Mac opened to the published port are allowed.
+# The table has the same name as firewall.nft so every check finds it.
+
+table inet tuff_sandbox
+delete table inet tuff_sandbox
+
+table inet tuff_sandbox {
+    chain output {
+        type filter hook output priority filter; policy drop;
+        oifname "lo" accept
+        ct state established,related accept
+        meta l4proto tcp reject with tcp reset
+        reject
+    }
+}

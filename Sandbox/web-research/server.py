@@ -24,11 +24,18 @@ over. firewall.nft, loaded by entrypoint.sh before this server starts, applies
 the same rule to the whole VM, with one exception for DNS to the VM's name
 server, and the server then drops root and every Linux
 capability so it cannot change the firewall.
+
+With TUFF_RESEARCH_PROXY set (socks5:// or http://), every connection goes
+through that proxy instead, names are looked up with DNS-over-HTTPS through
+the same proxy, and the firewall allows the proxy's address and port only, so
+nothing leaves the VM outside it. The same address checks still run on every
+answer before the proxy is asked to connect.
 """
 
 from __future__ import annotations
 
 import codecs
+import base64
 import ctypes
 import errno
 import gzip
@@ -40,7 +47,9 @@ import multiprocessing
 import os
 import re
 import socket
+import secrets
 import ssl
+import struct
 import sys
 import threading
 import time
@@ -217,7 +226,7 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self._address = target.address
 
     def connect(self):
-        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = open_connection(self._address, self.port, self.timeout)
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -227,7 +236,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._address = target.address
 
     def connect(self):
-        sock = socket.create_connection((self._address, self.port), self.timeout)
+        sock = open_connection(self._address, self.port, self.timeout)
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
@@ -276,6 +285,265 @@ def pinned_transport(method: str, target: Target, headers: dict[str, str],
     finally:
         timer.cancel()
         connection.close()
+
+
+# --- Proxy ------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Proxy:
+    """Where every connection goes when the proxy option is on. The address is
+    the one entrypoint.sh resolved and opened in the firewall."""
+    scheme: str
+    address: str
+    port: int
+    username: str = field(default="", repr=False)
+    password: str = field(default="", repr=False)
+
+
+class ProxyError(OSError):
+    """A proxy failure. Its message never names the proxy or its login, since
+    it reaches the model as part of a tool error."""
+
+
+PROXY_SCHEMES = ("socks5", "http")
+
+
+def parse_proxy(url: str, address: str = "", username: str = "",
+                password: str = "") -> Proxy:
+    parts = urllib.parse.urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    if scheme not in PROXY_SCHEMES:
+        raise ValueError("the proxy must be a socks5:// or http:// URL")
+    if parts.username or parts.password:
+        raise ValueError("put the proxy login in the Keychain, not in the URL")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError("the proxy URL must be scheme://host:port only")
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if not parts.hostname or not port:
+        raise ValueError("the proxy URL needs a host and a port")
+    address = address or parts.hostname
+    try:
+        ipaddress.ip_address(address)
+    except ValueError:
+        raise ValueError("the proxy's address could not be resolved")
+    if len(username.encode()) > 255 or len(password.encode()) > 255:
+        raise ValueError("the proxy login is too long")
+    return Proxy(scheme, address, port, username, password)
+
+
+def proxy_from_environment() -> Proxy | None:
+    url = os.environ.get("TUFF_RESEARCH_PROXY", "")
+    # Taken out of the environment so the extraction child processes, and
+    # anything else started from here, never inherit the login.
+    address = os.environ.pop("TUFF_RESEARCH_PROXY_ADDRESS", "")
+    username = os.environ.pop("TUFF_RESEARCH_PROXY_USER", "")
+    password = os.environ.pop("TUFF_RESEARCH_PROXY_PASSWORD", "")
+    if not url:
+        return None
+    return parse_proxy(url, address, username, password)
+
+
+def _receive_exactly(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ProxyError("the proxy closed the connection")
+        data += chunk
+    return data
+
+
+SOCKS_REPLIES = {
+    1: "the proxy failed", 2: "the proxy's rules refused the connection",
+    3: "the proxy cannot reach that network", 4: "the proxy cannot reach that host",
+    5: "the site refused the proxy's connection", 6: "the proxy's connection timed out",
+    7: "the proxy does not support this request", 8: "the proxy does not support this address",
+}
+
+
+def socks5_handshake(sock: socket.socket, proxy: Proxy, address: str, port: int) -> None:
+    """RFC 1928, with RFC 1929 username and password when a login is set. The
+    proxy gets the checked address, never a name, so it cannot be steered to a
+    different one."""
+    methods = b"\x00\x02" if proxy.username else b"\x00"
+    sock.sendall(b"\x05" + bytes([len(methods)]) + methods)
+    version, method = _receive_exactly(sock, 2)
+    if version != 5:
+        raise ProxyError("the proxy is not a SOCKS5 proxy")
+    if method == 0x02 and proxy.username:
+        user, secret = proxy.username.encode(), proxy.password.encode()
+        sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(secret)]) + secret)
+        if _receive_exactly(sock, 2)[1] != 0:
+            raise ProxyError("the proxy refused the login")
+    elif method != 0x00:
+        # A proxy that needs a login refuses (0xFF) a client offering none.
+        raise ProxyError("the proxy accepts no supported login method" if proxy.username
+                         else "the proxy wants a login that is not set")
+    ip = ipaddress.ip_address(address)
+    kind = b"\x01" if ip.version == 4 else b"\x04"
+    sock.sendall(b"\x05\x01\x00" + kind + ip.packed + struct.pack("!H", port))
+    version, reply, _, kind = _receive_exactly(sock, 4)
+    if version != 5:
+        raise ProxyError("the proxy sent a malformed reply")
+    if reply != 0:
+        raise ProxyError(SOCKS_REPLIES.get(reply, "the proxy refused the connection"))
+    if kind == 1:
+        _receive_exactly(sock, 4 + 2)
+    elif kind == 4:
+        _receive_exactly(sock, 16 + 2)
+    elif kind == 3:
+        _receive_exactly(sock, _receive_exactly(sock, 1)[0] + 2)
+    else:
+        raise ProxyError("the proxy sent a malformed reply")
+
+
+def http_connect_handshake(sock: socket.socket, proxy: Proxy, address: str, port: int) -> None:
+    """An HTTP CONNECT tunnel to the checked address, for http:// pages too, so
+    the proxy never resolves a name or reads a request itself."""
+    authority = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+    lines = [f"CONNECT {authority} HTTP/1.1", f"Host: {authority}"]
+    if proxy.username:
+        login = base64.b64encode(f"{proxy.username}:{proxy.password}".encode()).decode()
+        lines.append(f"Proxy-Authorization: Basic {login}")
+    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    # One byte at a time, so nothing after the header is read away from TLS.
+    header = b""
+    while not header.endswith(b"\r\n\r\n"):
+        if len(header) > 8192:
+            raise ProxyError("the proxy sent a malformed reply")
+        header += _receive_exactly(sock, 1)
+    status_line = header.split(b"\r\n", 1)[0].split()
+    if len(status_line) < 2 or not status_line[0].startswith(b"HTTP/"):
+        raise ProxyError("the proxy is not an HTTP proxy")
+    status = status_line[1]
+    if status == b"407":
+        raise ProxyError("the proxy refused the login" if proxy.username
+                         else "the proxy wants a login that is not set")
+    if not status.startswith(b"2"):
+        raise ProxyError(f"the proxy refused the connection (HTTP {status.decode('ascii', 'replace')[:3]})")
+
+
+def open_connection(address: str, port: int, timeout: float,
+                    proxy: Proxy | None = None) -> socket.socket:
+    """A TCP connection to a checked address, through the proxy when one is set."""
+    proxy = proxy or PROXY
+    if proxy is None:
+        return socket.create_connection((address, port), timeout)
+    try:
+        sock = socket.create_connection((proxy.address, proxy.port), timeout)
+    except OSError as error:
+        raise ProxyError(f"could not reach the proxy ({error.strerror or 'timed out'})") from None
+    try:
+        if proxy.scheme == "socks5":
+            socks5_handshake(sock, proxy, address, port)
+        else:
+            http_connect_handshake(sock, proxy, address, port)
+    except ProxyError:
+        sock.close()
+        raise
+    except OSError as error:
+        sock.close()
+        raise ProxyError(f"the proxy connection failed ({error.strerror or 'timed out'})") from None
+    return sock
+
+
+PROXY: Proxy | None = None
+
+
+# --- DNS-over-HTTPS -----------------------------------------------------------
+
+# Used instead of the VM's DNS when the proxy is on, so name lookups travel
+# through the proxy too. The URL's host must be an IP address, since there is
+# no other way to look up a name.
+DOH_URL = os.environ.get("TUFF_RESEARCH_DOH", "https://1.1.1.1/dns-query")
+DNS_TYPES = {1: 4, 28: 16}  # A and AAAA, with their address sizes.
+
+
+def dns_query(host: str, record_type: int) -> tuple[int, bytes]:
+    labels = host.encode("ascii", "replace").split(b".")
+    if len(host) > 253 or not all(0 < len(label) <= 63 for label in labels):
+        raise ToolError(f"could not resolve {host}: not a valid host name", "dns_error", 502)
+    query_id = secrets.randbelow(65536)
+    name = b"".join(bytes([len(label)]) + label for label in labels) + b"\0"
+    return query_id, struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + name + struct.pack(
+        "!HH", record_type, 1)
+
+
+def _skip_name(message: bytes, offset: int) -> int:
+    while True:
+        if offset >= len(message):
+            raise ValueError("truncated name")
+        length = message[offset]
+        if length & 0xC0 == 0xC0:
+            return offset + 2
+        if length == 0:
+            return offset + 1
+        offset += 1 + length
+
+
+def dns_answers(message: bytes, query_id: int, record_type: int) -> list[str]:
+    """The addresses of `record_type` in a DNS reply. CNAME records are skipped;
+    the resolver includes the records they lead to."""
+    try:
+        reply_id, flags, questions, answers, _, _ = struct.unpack_from("!HHHHHH", message)
+        if reply_id != query_id or not flags & 0x8000:
+            raise ValueError("not the reply to this query")
+        rcode = flags & 0x000F
+        if rcode == 3:  # No such name.
+            return []
+        if rcode != 0:
+            raise ValueError(f"DNS error {rcode}")
+        offset = 12
+        for _ in range(questions):
+            offset = _skip_name(message, offset) + 4
+        addresses = []
+        for _ in range(answers):
+            offset = _skip_name(message, offset)
+            kind, _, _, size = struct.unpack_from("!HHIH", message, offset)
+            offset += 10
+            data = message[offset:offset + size]
+            if len(data) != size:
+                raise ValueError("truncated record")
+            offset += size
+            if kind == record_type and size == DNS_TYPES[record_type]:
+                addresses.append(str(ipaddress.ip_address(data)))
+        return addresses
+    except (struct.error, ValueError, IndexError) as error:
+        raise ToolError(f"unreadable DNS answer: {error}", "dns_error", 502)
+
+
+def doh_target(url: str = DOH_URL) -> Target:
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    if parts.scheme != "https" or not is_public_address(host):
+        raise ValueError("TUFF_RESEARCH_DOH must be an https URL on a public IP address")
+    return Target("https", host, parts.port or 443, parts.path or "/dns-query", host)
+
+
+def doh_resolver(host: str, port: int, transport=None, target: Target | None = None) -> list[str]:
+    try:
+        return [str(ipaddress.ip_address(host))]
+    except ValueError:
+        pass
+    transport = transport or pinned_transport
+    target = target or doh_target()
+    addresses = []
+    for record_type in DNS_TYPES:
+        query_id, query = dns_query(host, record_type)
+        headers = {"Host": target.host, "User-Agent": USER_AGENT,
+                   "Accept": "application/dns-message",
+                   "Content-Type": "application/dns-message"}
+        response = transport("POST", target, headers, query, deadline=FETCH_TIMEOUT)
+        if response.status != 200:
+            raise ToolError(f"could not resolve {host}: the DNS server answered HTTP "
+                            f"{response.status}", "dns_error", 502)
+        addresses += dns_answers(response.body, query_id, record_type)
+    if not addresses:
+        raise ToolError(f"could not resolve {host}", "dns_error", 502)
+    return addresses
 
 
 def decode_body(response: Response) -> bytes:
@@ -681,7 +949,10 @@ class Handler(BaseHTTPRequestHandler):
         if not host_allowed(self.headers.get("Host")):
             return self._error(ToolError("forbidden host", "forbidden_host", 403))
         if self.path == "/health":
-            return self._send(200, {"status": "ok"})
+            health = {"status": "ok"}
+            if PROXY is not None:
+                health["proxy"] = PROXY.scheme  # Never the address or login.
+            return self._send(200, health)
         self._error(ToolError("not found", "not_found", 404))
 
     def do_POST(self):
@@ -744,6 +1015,17 @@ def drop_privileges(uid: int = SANDBOX_UID) -> None:
 
 
 def main():
+    global PROXY
+    try:
+        PROXY = proxy_from_environment()
+        if PROXY is not None:
+            doh_target()
+    except ValueError as error:
+        sys.stderr.write(f"proxy setting refused: {error}\n")
+        sys.exit(1)
+    if PROXY is not None:
+        Handler.tools = WebTools(resolver=doh_resolver)
+        sys.stderr.write(f"sending every connection through the {PROXY.scheme} proxy\n")
     drop_privileges()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
