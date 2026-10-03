@@ -295,6 +295,15 @@ unsupported values return `unsupported_value`. `chat_template_kwargs` may
 carry only `enable_thinking` and `preserve_thinking`. Accepted metadata fields are
 ignored, and `null` fields count as absent.
 
+## Web research
+
+`tuff research "<question>"` lets a local model search the web and read pages,
+then answer with numbered sources. Web access runs in a sandboxed Linux VM
+managed by Apple's `container` tool, which needs macOS 26. The model can only
+search and read; it has no tool that runs commands or touches files. See
+[Web research](docs/WEB_RESEARCH.md) for setup, the security model and the
+injection tests.
+
 ## Build it yourself
 
 Building requires Xcode with Swift 6.2 or newer and Metal 3.2 support.
