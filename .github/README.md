@@ -1,4 +1,4 @@
-# TUFF + Web Research (Alex's fork)
+# TUFF + Web Research (fork)
 
 This is a personal fork of **[TUFF](https://github.com/rexmhall09/TUFF)** by
 [rexmhall09](https://github.com/rexmhall09). TUFF does all the hard work: it
