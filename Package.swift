@@ -142,7 +142,9 @@ let package = Package(
                 "TUFFAppCore",
                 "TUFFAppServer",
                 "TUFFAppUpdater",
+                "TUFFAppResearch",
                 "TUFFMacPresentation",
+                "TUFFResearchCore",
             ],
             path: "Sources/TUFFApp/Mac",
             resources: [
@@ -158,6 +160,11 @@ let package = Package(
             name: "TUFFResearch",
             dependencies: ["TUFFResearchCore"],
             path: "Sources/TUFFResearch/Command"
+        ),
+        .target(
+            name: "TUFFAppResearch",
+            dependencies: ["TUFFModelCatalog", "TUFFResearchCore", "TUFFAppServer"],
+            path: "Sources/TUFFApp/Research"
         ),
         .target(
             name: "TUFFValidationSupport",
@@ -229,6 +236,7 @@ let package = Package(
                 "TUFFAppCore",
                 "TUFFAppServer",
                 "TUFFAppUpdater",
+                "TUFFAppResearch",
                 "TUFFMac",
                 "TUFFMacPresentation",
                 .product(name: "SwiftMath", package: "SwiftMath"),
@@ -256,6 +264,11 @@ let package = Package(
             name: "TUFFResearchTests",
             dependencies: ["TUFFResearchCore"],
             path: "Tests/TUFFResearch"
+        ),
+        .testTarget(
+            name: "TUFFAppResearchTests",
+            dependencies: ["TUFFAppResearch", "TUFFAppServer", "TUFFResearchCore"],
+            path: "Tests/TUFFApp/Research"
         ),
         .testTarget(
             name: "TUFFAppUpdaterTests",

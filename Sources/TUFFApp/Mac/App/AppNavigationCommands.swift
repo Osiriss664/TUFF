@@ -21,10 +21,9 @@ struct AppNavigationCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Navigate") {
-            destinationButton(.chat)
-            destinationButton(.models)
-            destinationButton(.server)
-            destinationButton(.settings)
+            ForEach(AppDestination.allCases) { destination in
+                destinationButton(destination)
+            }
         }
     }
 

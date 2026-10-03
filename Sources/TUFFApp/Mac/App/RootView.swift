@@ -1,5 +1,6 @@
 import AppKit
 import TUFFAppCore
+import TUFFAppResearch
 import TUFFAppServer
 import TUFFAppUpdater
 import TUFFMacPresentation
@@ -32,6 +33,7 @@ struct RootView: View {
     let model: AppModel
     let backgroundAPI: AppBackgroundAPIController
     let updateController: AppUpdateController
+    let research: ResearchWorkspace
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var navigation = AppNavigationState()
     @State private var renameTarget: AppConversationRecord?
@@ -131,7 +133,8 @@ struct RootView: View {
             destination: navigation.destination,
             model: model,
             backgroundAPI: backgroundAPI,
-            updateController: updateController)
+            updateController: updateController,
+            research: research)
     }
 
     private var sidebar: some View {
@@ -185,6 +188,13 @@ struct RootView: View {
                 } else {
                     ForEach(model.conversationStore.conversations) { conversation in
                         conversationRow(conversation)
+                    }
+                }
+            }
+            if !research.reports.reports.isEmpty {
+                Section("Research Reports") {
+                    ForEach(research.reports.reports) { report in
+                        reportRow(report)
                     }
                 }
             }
@@ -296,6 +306,45 @@ struct RootView: View {
         .accessibilityAction(named: "Delete chat") {
             model.deleteConversation(conversation)
         }
+    }
+
+    private func isOpen(_ report: SavedResearchReport) -> Bool {
+        navigation.destination == .research && research.shownReport?.id == report.id
+    }
+
+    private func reportRow(_ report: SavedResearchReport) -> some View {
+        Button {
+            navigation.select(.research)
+            research.open(report)
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(report.question)
+                        .appFont(.body)
+                        .lineLimit(2)
+                    Text(report.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .appFont(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(isOpen(report)
+                           ? TUFFMacTheme.accentColor.opacity(0.14)
+                           : Color.clear)
+        .foregroundStyle(isOpen(report) ? TUFFMacTheme.accentColor : .primary)
+        .disabled(research.run.isRunning && !isOpen(report))
+        .contextMenu {
+            Button("Move to Trash", role: .destructive) {
+                research.delete(report)
+            }
+        }
+        .accessibilityLabel(report.question)
+        .accessibilityHint("Opens this research report")
+        .accessibilityAddTraits(isOpen(report) ? .isSelected : [])
     }
 
     private func modelName(for profileKey: String) -> String {
@@ -446,12 +495,15 @@ struct AppWorkspaceView: View {
     let model: AppModel
     let backgroundAPI: AppBackgroundAPIController
     let updateController: AppUpdateController
+    let research: ResearchWorkspace
 
     var body: some View {
         Group {
             switch destination {
             case .chat:
                 ChatWorkspaceView(model: model)
+            case .research:
+                ResearchWorkspaceView(model: model, research: research)
             case .models:
                 ModelsWorkspaceView(model: model)
             case .server:

@@ -1,5 +1,6 @@
 import AppKit
 import TUFFAppCore
+import TUFFAppResearch
 import TUFFAppServer
 import TUFFAppUpdater
 import TUFFMacPresentation
@@ -11,6 +12,9 @@ import SwiftUI
 private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the scene so quitting can release this session's staged images.
     @MainActor static var model: AppModel?
+    /// Set by the scene so quitting stops the research server and sandbox
+    /// this app started.
+    @MainActor static var research: ResearchWorkspace?
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
@@ -18,6 +22,7 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
             // waiting to be written when the app is asked to quit.
             Self.model?.flushPendingSettings()
             Self.model?.releaseAllAttachments()
+            Self.research?.shutdown()
         }
     }
 
@@ -44,7 +49,8 @@ struct TUFFMacApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: ForegroundAppDelegate
     @State private var isReportingBug = false
     @State private var model: AppModel
-    @State private var backgroundAPI = AppBackgroundAPIController()
+    @State private var backgroundAPI: AppBackgroundAPIController
+    @State private var research: ResearchWorkspace
     @State private var updateController: AppUpdateController
     private let inferenceBroker: SharedInferenceBroker
     private let loadModelRequested: Bool
@@ -63,11 +69,18 @@ struct TUFFMacApp: App {
             visionRuntimeSupported: AppModel.currentDeviceSupportsVisionRuntime,
             settingsPersistenceEnabled: true)
         let updateController = AppUpdateController()
+        let backgroundAPI = AppBackgroundAPIController()
+        let research = ResearchWorkspace(backgroundAPI: backgroundAPI)
         self.inferenceBroker = inferenceBroker
         self.loadModelRequested = CommandLine.arguments.contains("--load-model")
         _model = State(initialValue: model)
         _updateController = State(initialValue: updateController)
-        MainActor.assumeIsolated { ForegroundAppDelegate.model = model }
+        _backgroundAPI = State(initialValue: backgroundAPI)
+        _research = State(initialValue: research)
+        MainActor.assumeIsolated {
+            ForegroundAppDelegate.model = model
+            ForegroundAppDelegate.research = research
+        }
     }
 
     var body: some Scene {
@@ -75,7 +88,8 @@ struct TUFFMacApp: App {
             RootView(
                 model: model,
                 backgroundAPI: backgroundAPI,
-                updateController: updateController)
+                updateController: updateController,
+                research: research)
                 .sheet(isPresented: $isReportingBug) { BugReportSheet(model: model) }
                 .alert("Recovery Update", isPresented: Binding(
                     get: { updateController.recoveryMessage != nil },
