@@ -287,6 +287,8 @@ The server provides `GET /health`, `GET /v1/models`, and
 Chat Completions supports JSON, streaming SSE, model-aware reasoning,
 function-tool declarations, prompt reuse, and installed image companions.
 Clients approve and execute tool calls themselves.
+Non-streaming replies return the model's thinking as `reasoning_content`;
+streams leave it out.
 
 The server binds to `127.0.0.1` and has no authentication or TLS. Keep it local.
 Point your client at `http://127.0.0.1:<port>/v1`; `/v1/models` supplies the model

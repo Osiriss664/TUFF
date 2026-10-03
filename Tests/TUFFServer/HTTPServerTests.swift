@@ -68,6 +68,7 @@ private actor ContentAndToolBackend: ServerInferenceBackend {
         onEvent(.toolCall(call))
         return ServerCompletion(
             content: content,
+            reasoning: "The user wants the file.",
             toolCalls: [call],
             finishReason: "tool_calls",
             usage: OpenAIUsage(promptTokens: 3, completionTokens: 8, totalTokens: 11))
@@ -764,6 +765,7 @@ struct HTTPServerTests {
         let choices = try #require(object["choices"] as? [[String: Any]])
         let message = try #require(choices[0]["message"] as? [String: Any])
         #expect(message["content"] as? String == "I will read it.")
+        #expect(message["reasoning_content"] as? String == "The user wants the file.")
         #expect((message["tool_calls"] as? [[String: Any]])?.count == 1)
         #expect(choices[0]["finish_reason"] as? String == "tool_calls")
 
@@ -776,6 +778,7 @@ struct HTTPServerTests {
         #expect(stream.contains(#""content":"I will read it.""#))
         #expect(stream.contains(#""tool_calls""#))
         #expect(stream.contains(#""finish_reason":"tool_calls""#))
+        #expect(!stream.contains("reasoning_content"))
 
         try await server.shutdown()
     }

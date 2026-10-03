@@ -10,15 +10,19 @@ public enum ServerInferenceEvent: Equatable, Sendable {
 
 public struct ServerCompletion: Equatable, Sendable {
     public let content: String
+    /// The model's thought channel, returned as `reasoning_content`.
+    public let reasoning: String
     public let toolCalls: [ParsedToolCall]
     public let finishReason: String
     public let usage: OpenAIUsage
 
     public init(content: String,
+                reasoning: String = "",
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
                 usage: OpenAIUsage) {
         self.content = content
+        self.reasoning = reasoning
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
@@ -1046,10 +1050,10 @@ public actor ServerModelSession: ServerInferenceBackend {
                         onEvent(.content(visible))
                     }
                     if state.stopMatcher.isStopped { state.shouldStop = true }
-                case .thinking:
-                    // The Chat Completions endpoint does not expose a thought
-                    // channel. It remains separate from visible content.
-                    break
+                case .thinking(let text):
+                    // Kept apart from visible content. Non-streaming replies
+                    // return it as `reasoning_content`; streams leave it out.
+                    state.reasoning += text
                 case .toolCall(let call):
                     state.calls.append(call)
                     onEvent(.toolCall(call))
@@ -1169,6 +1173,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         completed = true
         return ServerCompletion(
             content: state.content,
+            reasoning: state.reasoning,
             toolCalls: state.calls,
             finishReason: reason,
             usage: OpenAIUsage(promptTokens: result.prefillTokens,
@@ -1225,6 +1230,7 @@ public actor ServerModelSession: ServerInferenceBackend {
 private final class ServerDecodeState: @unchecked Sendable {
     var stopMatcher: StreamingStopMatcher
     var content = ""
+    var reasoning = ""
     var calls: [ParsedToolCall] = []
     var decodingError: Error?
     var shouldStop = false

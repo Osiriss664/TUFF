@@ -492,6 +492,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "role": "assistant",
             "content": encodedContent,
         ]
+        if !completion.reasoning.isEmpty {
+            message["reasoning_content"] = completion.reasoning
+        }
         if !completion.toolCalls.isEmpty {
             message["tool_calls"] = completion.toolCalls.map(toolCallObject)
         }
