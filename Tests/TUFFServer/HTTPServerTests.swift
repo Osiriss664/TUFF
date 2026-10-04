@@ -409,7 +409,7 @@ struct HTTPServerTests {
           "tools":[{"type":"function","function":{
             "name":"unsafe",
             "parameters":{"type":"object","properties":{
-              "value":{"anyOf":[{"type":"string"},{"type":"object"}]}
+              "value":{"allOf":[{"type":"string"},{"type":"object"}]}
             }}
           }}]
         }
