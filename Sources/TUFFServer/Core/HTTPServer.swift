@@ -178,6 +178,58 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             .first.map(String.init) ?? head.uri
     }
 
+    /// Names this server answers to. It listens on 127.0.0.1 only, so a
+    /// request naming any other host came from a browser whose page pointed
+    /// its own domain at this Mac (DNS rebinding) and would otherwise be
+    /// allowed to read the answers. "localhost" and "[::1]" stay accepted for
+    /// clients configured with those names. A reverse proxy or tunnel in
+    /// front of the server must pass the original Host through.
+    static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "[::1]"]
+
+    /// Whether a request may be served: its Host, when present, names this
+    /// Mac's loopback address, and any Origin is a loopback web page. A
+    /// request without Host (HTTP/1.0) cannot come from a browser and passes.
+    static func acceptsCaller(_ head: HTTPRequestHead) -> Bool {
+        let hosts = head.headers["host"]
+        guard hosts.count <= 1 else { return false }
+        if let host = hosts.first, !isLoopback(authority: host) { return false }
+        return head.headers["origin"].allSatisfy(isLoopback(origin:))
+    }
+
+    /// `127.0.0.1`, `localhost` or `[::1]`, with an optional port.
+    static func isLoopback(authority: String) -> Bool {
+        var name = Substring(authority.trimmingCharacters(in: .whitespaces).lowercased())
+        if name.hasPrefix("[") {
+            guard let close = name.firstIndex(of: "]") else { return false }
+            let port = name[name.index(after: close)...]
+            guard port.isEmpty || isPort(port) else { return false }
+            name = name[...close]
+        } else if let colon = name.firstIndex(of: ":") {
+            guard isPort(name[colon...]) else { return false }
+            name = name[..<colon]
+        }
+        // "localhost." is the same name written as fully qualified.
+        if name.count > 1, name.hasSuffix(".") { name = name.dropLast() }
+        return loopbackHosts.contains(String(name))
+    }
+
+    /// An `http` or `https` origin on a loopback host. `null`, other schemes
+    /// and every other site are refused.
+    static func isLoopback(origin: String) -> Bool {
+        let lowered = origin.trimmingCharacters(in: .whitespaces).lowercased()
+        for scheme in ["http://", "https://"] where lowered.hasPrefix(scheme) {
+            return isLoopback(authority: String(lowered.dropFirst(scheme.count)))
+        }
+        return false
+    }
+
+    /// A colon followed by one to five digits.
+    private static func isPort(_ text: Substring) -> Bool {
+        let digits = text.dropFirst()
+        return text.first == ":" && (1...5).contains(digits.count)
+            && digits.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     static func carriesChatBody(_ head: HTTPRequestHead) -> Bool {
         head.method == .POST
             && requestPath(head) == chatCompletionsPath
@@ -199,6 +251,15 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 : nil
             bodyError = nil
             receivedBodyBytes = 0
+            if !Self.acceptsCaller(head) {
+                // Answered at `.end`, like any other rejected body; nothing
+                // is parsed or staged meanwhile.
+                bodyParser = nil
+                bodyError = ServerRequestError.invalid(
+                    message: "this server only answers requests addressed to "
+                        + "127.0.0.1, localhost or [::1]",
+                    param: nil, code: "forbidden_host")
+            }
         case .body(var part):
             guard !discardingUntilClose else { return }
             receivedBodyBytes += part.readableBytes
@@ -808,6 +869,8 @@ private extension ServerRequestError {
             switch code {
             case "request_too_large", "image_too_large", "too_many_images":
                 .payloadTooLarge
+            case "forbidden_host":
+                .forbidden
             default:
                 .badRequest
             }
