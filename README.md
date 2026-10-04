@@ -287,8 +287,6 @@ The server provides `GET /health`, `GET /v1/models`, and
 Chat Completions supports JSON, streaming SSE, model-aware reasoning,
 function-tool declarations, prompt reuse, and installed image companions.
 Clients approve and execute tool calls themselves.
-Non-streaming replies return the model's thinking as `reasoning_content`;
-streams leave it out.
 
 The server binds to `127.0.0.1` and has no authentication or TLS. Keep it local.
 Point your client at `http://127.0.0.1:<port>/v1`; `/v1/models` supplies the model
@@ -296,15 +294,6 @@ identifier. Unknown request fields return `unknown_parameter`; recognized but
 unsupported values return `unsupported_value`. `chat_template_kwargs` may
 carry only `enable_thinking` and `preserve_thinking`. Accepted metadata fields are
 ignored, and `null` fields count as absent.
-
-## Web research
-
-`tuff research "<question>"` lets a local model search the web and read pages,
-then answer with numbered sources. Web access runs in a sandboxed Linux VM
-managed by Apple's `container` tool, which needs macOS 26. The model can only
-search and read; it has no tool that runs commands or touches files. See
-[Web research](docs/WEB_RESEARCH.md) for setup, the security model and the
-injection tests.
 
 ## Build it yourself
 
