@@ -91,8 +91,9 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Answers from search previews without opening a page | Asks it once to open pages. |
 | Does it again | Opens the top three search results itself, taking the first hit of every search before any second hit, and hands them over. |
 | Repeats the same searches without reading anything | Refuses the repeats, then opens the top results for it. |
+| Spends two steps in a row only repeating searches it already ran | Stops the research there and asks for the answer, so no steps are wasted. The report notes the early stop. |
 | Answers after only one search or one page | Asks it once to look wider: other words, another language, another source. |
-| Runs out of steps with fewer than three pages read | Opens more top results before the final answer. |
+| Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
@@ -108,9 +109,6 @@ that only one search was run or that a citation matches no page read.
   listed so you can check.
 - The search engine and the websites see your internet address, as with any
   web search.
-- Late in a long run, a model can get stuck repeating a search that the
-  research keeps refusing, and so wastes its last steps. Qwen3.6 did this in
-  a 40-step test. A fix has been proposed.
 
 The full technical guide is
 [docs/WEB_RESEARCH.md](https://github.com/Osiriss664/TUFF/blob/feature/web-research/docs/WEB_RESEARCH.md)

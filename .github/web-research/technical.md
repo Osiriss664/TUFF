@@ -5,8 +5,8 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `e5401a8` at the time of writing: the research code
-as tested on a Mac at `aaa9fca`, on top of TUFF 7.3.0). File paths are relative to
+branch (commit `7986989` at the time of writing, on top of TUFF 7.3.0,
+tested on a Mac). File paths are relative to
 that branch.
 
 [Back to the front page](../README.md) ·
@@ -119,18 +119,18 @@ can happen in every step). Defaults are shown; most can be changed (see
 | Answer after searching, no page read | Ask to open pages (`readPagesRequest`). | `askingToReadPages` |
 | Same again (or at once with `--nudges off`) | Loop opens top results itself: `minimumPagesRead` (3) pages, round-robin over all searches (first hit of each search, then second hits), up to `autoOpenAttempts` (6) URLs tried, each capped at `min(pageChars, max(500, budget/2/wanted))`. Off with `--auto-open off`. | `openingTopResults` |
 | Repeated search (case, spacing, quotation marks and word order ignored) | Refused without reaching the search engine; after `repeatsBeforeOpening` (2) refusals with no page read, the loop opens top results as above (not with `--auto-open off`). | `repeatedSearchRefused(query)` |
+| `refusedStepsBeforeAnswering` (2) steps in a row in which every executed tool call was a refused repeat, not on the last step | Stop the step loop and go to the final answer (`repeatedSearchesStopRequest`), with the top-up below. A step with any new search or page read, or the in-loop auto-open above, resets the count. Always on. The report gets `stoppedRepeatedSearches` (not `budgetExhausted`). | `stoppingRepeatedSearches` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
-| Step budget used up with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
+| Step budget used up, or stopped for repeated searches, with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
 | Step with reasoning on exceeds the request timeout | Retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error. | `retryingAfterTimeout` |
 | Context overflow reported by the server | Lower the characters-per-token estimate, compact to half budget and retry; if it overflows again, shorten even the newest results and retry once more. | `shortenedOlderResults` |
 
-Known limit: late in a long run, a model can keep repeating a search that is
-refused every time, which uses up its remaining steps (Qwen3.6 did from step
-25 of a 40-step run). Auto-open only helps when no page has been read yet. A
-fix is proposed.
+The repeated-search stop was added after Qwen3.6, from step 25 of a 40-step
+run, repeated one refused search until its steps ran out. With the stop, the
+same run ended at step 25 and took 555 s instead of 1,195 s.
 
 No nudge is sent on the last step, since there is no step left to answer in.
 The three nudges are switched off together with `--nudges off`, and the
@@ -322,7 +322,8 @@ and that a public page still loads.
 - query two
 
 _One italic paragraph per note, if any: unread citations, budget used up,
-no pages read, cut off at the token limit, only one search._
+stopped early for repeated searches, no pages read, cut off at the token
+limit, only one search._
 ```
 
 The Sources and Searches sections appear only when they have entries.
@@ -333,7 +334,8 @@ not exist yet). The app saves each report twice in
 (`SavedResearchReport`) with `id`, `question`, `answer`, `markdown` (the
 report text), `sources` (`number`, `title`, `url`), `model`, `createdAt`,
 `durationSeconds`, `budgetExhausted`, `answerWasCutOff`, `savedSearchQueries`,
-`unknownCitations` and the progress `steps`. The two optional keys are
+`stoppedOnRepeats`, `unknownCitations` and the progress `steps`. The three
+optional keys are
 missing in reports saved by older versions. Deleting a report in the app moves both files to the Trash.
 
 ## Configuration
@@ -395,9 +397,10 @@ python3 Scripts/research_injection_check.py --base-url <public fixture URL> --re
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (56 tests), covering tool handling,
-  nudges, fallbacks, compaction, the rewrite, the settings and sanitising.
-- `Tests/TUFFApp/Research/` covers the app side (40 tests): run control,
+  model replies and a fake sandbox (59 tests), covering tool handling,
+  nudges, fallbacks, the repeated-search stop, compaction, the rewrite, the
+  settings and sanitising.
+- `Tests/TUFFApp/Research/` covers the app side (41 tests): run control,
   report store, formatter and service controllers.
 - The injection harness serves four hostile pages
   (`Sandbox/web-research/fixtures/injection`) and fails a run if the model
