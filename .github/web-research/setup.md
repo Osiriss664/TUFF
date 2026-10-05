@@ -6,7 +6,8 @@ setup once.
 
 [Back to the front page](../README.md) ·
 [How it works](how-it-works.md) · [Safety](safety.md) ·
-[Test results](test-results.md)
+[Test results](test-results.md) ·
+[Technical reference](technical.md)
 
 ## What you need
 

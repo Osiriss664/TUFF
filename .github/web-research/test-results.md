@@ -7,7 +7,8 @@ They were run on 5 October 2026 with the code at commit `4a94397` on the
 
 [Back to the front page](../README.md) ·
 [How it works](how-it-works.md) · [Safety](safety.md) ·
-[Setup and use](setup.md)
+[Setup and use](setup.md) ·
+[Technical reference](technical.md)
 
 ## Automated tests
 

@@ -6,7 +6,8 @@ This page walks through what happens, step by step.
 
 [Back to the front page](../README.md) ·
 [Safety](safety.md) · [Setup and use](setup.md) ·
-[Test results](test-results.md)
+[Test results](test-results.md) ·
+[Technical reference](technical.md)
 
 ## The three parts
 

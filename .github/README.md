@@ -58,6 +58,7 @@ flowchart LR
 | [How it stays safe](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/safety.md) | The sandbox, the firewall, how it was tested and what it does not protect against. |
 | [Setup and use](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/setup.md) | What you need, how to build it, and how to use it in the app and in Terminal. |
 | [Test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md) | Real runs with Qwen3.6 and Gemma 4 on a 16 GB Mac. |
+| [Technical reference](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/technical.md) | For developers: components, the loop and its safeguards, the sandbox API and firewall, report format, configuration and tests. |
 
 ## Status
 

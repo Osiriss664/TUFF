@@ -7,7 +7,8 @@ reach your Mac, your files or your home network.
 
 [Back to the front page](../README.md) ·
 [How it works](how-it-works.md) · [Setup and use](setup.md) ·
-[Test results](test-results.md)
+[Test results](test-results.md) ·
+[Technical reference](technical.md)
 
 ## The layers
 
