@@ -24,8 +24,9 @@ The plan:
 - **The web stays in a sandbox.** Searching and fetching pages happen inside
   a throwaway Linux VM made with
   [Apple container](https://github.com/apple/container). The VM has a
-  firewall that only allows the public internet, runs as a non-root user and
-  has no access to my files or to other services on the Mac.
+  firewall that only allows public internet addresses (plus name lookups
+  through the Mac), runs as a non-root user and has no access to my files or
+  to other services on the Mac.
 - **The model only gets web tools.** It can search and read pages, nothing
   else: no shell, no running files, no writing to the Mac except the final
   report. Everything that comes back from the web is treated as untrusted

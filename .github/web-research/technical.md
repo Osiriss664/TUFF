@@ -47,13 +47,13 @@ flowchart TB
     CLI --> Core
     Core -- "POST /v1/chat/completions" --> Server
     Core -- "POST /v1/search, /v1/fetch<br/>127.0.0.1:9000 (published port)" --> Py
-    Py -- "public internet only" --> Net((Internet))
+    Py -- "public addresses only" --> Net((Internet))
     App --> Store
     CLI -- "--output" --> Store
 ```
 
 Data flows one way: the host calls the VM through the published port, the
-VM never calls the host (the firewall refuses it, except DNS). The model
+VM never calls the host (the firewall refuses the Mac's address, except DNS on port 53). The model
 never talks to the sandbox directly; every tool call goes through the loop,
 which validates it.
 
@@ -251,6 +251,10 @@ and, if `SEARXNG_URL` is set, one exception for that address and port. Then
 - other IPv4 allowed;
 - IPv6 `2001::/32`, `2001:db8::/32`, `2002::/16` refused; global unicast
   `2000::/3` allowed; everything else refused.
+
+The rules match address ranges, not devices. A host on the local network or
+the Mac itself is refused at its private address, but not at a public IPv4
+or global IPv6 address of its own, if the VM has a route to it.
 
 The app verifies this from outside before every question: it reads the
 loaded ruleset with `container exec` and checks the policy, the refused

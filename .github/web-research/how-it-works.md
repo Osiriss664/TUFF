@@ -24,7 +24,7 @@ flowchart LR
     end
     Loop <-->|asks, gets tool calls| Model
     Loop <-->|search / open page| Web
-    Web <-->|public internet only| Internet((Internet))
+    Web <-->|public addresses only| Internet((Internet))
     Loop --> Report
 ```
 
