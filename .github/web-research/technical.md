@@ -334,7 +334,7 @@ CLI (`tuff research <question> [options]`):
 | `--help`, `-h` | | Print the options. |
 | `--` | | End of options; the rest is the question. |
 
-The app's Research screen sets steps (1–32), page text per read (under More
+The app's Research screen sets steps (1–32), page text per read (2,000, 3,000, 5,000 or 8,000 characters, under More
 Options) and Show thinking. Show thinking is on by default in the app, which
 turns reasoning on and raises the token limit to 8192; the rest uses the
 defaults.
