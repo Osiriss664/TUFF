@@ -5,7 +5,8 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `4a94397` at the time of writing). File paths are relative to
+branch (commit `e5401a8` at the time of writing: the research code
+as tested on a Mac at `aaa9fca`, on top of TUFF 7.3.0). File paths are relative to
 that branch.
 
 [Back to the front page](../README.md) ·
@@ -86,12 +87,14 @@ the presentation of `ResearchEvent`s differs.
    prompt budget.
 2. Start the conversation with the system prompt (research method, today's
    date, the untrusted-marker rule) and the question.
-3. For each step `1…maxSteps` (default 8):
+3. For each step `1…maxSteps` (default 8, at most 100):
    - Send the conversation with tools allowed (`tool_choice: "auto"`).
    - If the reply has tool calls: run up to `maxToolCallsPerTurn` (4) of them,
      append each result as a `tool` message, and append a progress line
      (`Research so far: N searches (…), M pages read, step s of n.`) to the
      last result of the turn.
+   - If the reply was cut off at the token limit while thinking, with no
+     answer and steps left: continue with the next step, reasoning off.
    - If the reply has no tool calls: either send a nudge and continue (see
      below), or take it as the answer.
 4. If the steps run out: append a final request without tools
@@ -99,29 +102,39 @@ the presentation of `ResearchEvent`s differs.
 5. Check the answer's citations; if needed, ask once for a rewrite.
 6. Return a `ResearchReport`.
 
-`web_search` returns up to 5 results per query (`searchResults`). Each new
+`web_search` returns up to `searchResults` (5) results per query. Each new
 URL read with `open_page` gets the next source number; re-reading the same
 URL (any offset) keeps its number, and the result tells the model so.
 
 ## Safeguards in the loop
 
-Each one fires at most once per run unless noted (the context-overflow retry can happen once per step). Constants are in
-`ResearchAgent`.
+Each one fires at most once per run unless noted (the context-overflow retries
+can happen in every step). Defaults are shown; most can be changed (see
+[Configuration](#configuration)). Constants are in `ResearchAgent` and
+`ResearchOptions`.
 
 | Trigger | Action | Event |
 | --- | --- | --- |
 | Answer without any tool call | Ask to search first (`searchFirstRequest`). | `askingToSearchFirst` |
 | Answer after searching, no page read | Ask to open pages (`readPagesRequest`). | `askingToReadPages` |
-| Same again | Loop opens top results itself: `minimumPagesRead` (3) pages, round-robin over all searches (first hit of each search, then second hits), up to `autoOpenAttempts` (6) URLs tried, each capped at `min(pageChars, max(500, budget/2/3))`. | `openingTopResults` |
-| Repeated search (case, spacing, quotation marks and word order ignored) | Refused without reaching the search engine; after `repeatsBeforeOpening` (2) refusals with no page read, the loop opens top results as above. | `repeatedSearchRefused(query)` |
+| Same again (or at once with `--nudges off`) | Loop opens top results itself: `minimumPagesRead` (3) pages, round-robin over all searches (first hit of each search, then second hits), up to `autoOpenAttempts` (6) URLs tried, each capped at `min(pageChars, max(500, budget/2/wanted))`. Off with `--auto-open off`. | `openingTopResults` |
+| Repeated search (case, spacing, quotation marks and word order ignored) | Refused without reaching the search engine; after `repeatsBeforeOpening` (2) refusals with no page read, the loop opens top results as above (not with `--auto-open off`). | `repeatedSearchRefused(query)` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
-| Step budget used up with fewer than 3 pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
+| Step budget used up with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
+| Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
 | Step with reasoning on exceeds the request timeout | Retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error. | `retryingAfterTimeout` |
-| Context overflow reported by the server | Lower the characters-per-token estimate, compact to half budget, retry once. | `shortenedOlderResults` |
+| Context overflow reported by the server | Lower the characters-per-token estimate, compact to half budget and retry; if it overflows again, shorten even the newest results and retry once more. | `shortenedOlderResults` |
+
+Known limit: late in a long run, a model can keep repeating a search that is
+refused every time, which uses up its remaining steps (Qwen3.6 did from step
+25 of a 40-step run). Auto-open only helps when no page has been read yet. A
+fix is proposed.
 
 No nudge is sent on the last step, since there is no step left to answer in.
+The three nudges are switched off together with `--nudges off`, and the
+rewrite with `--rewrite off`.
 The report adds notes for: budget exhausted, no pages read, answer cut off
 at the token limit, only one search, and unknown citations.
 
@@ -133,8 +146,9 @@ or 16,000 when the server lists no window, or `--context-chars` if set.
 `charsPerToken` is calibrated from the server's reported `prompt_tokens`.
 Before each request, `State.compact` shortens older messages until the
 conversation fits (aiming at about three quarters of the budget). The system
-prompt, the question, the newest tool result and the last message are never
-shortened. In order:
+prompt, the question, the newest tool result and the last message are not
+shortened, except in the emergency step after a second context overflow.
+In order:
 
 1. A page read twice keeps only its newest copy.
 2. Older pages are cut to about 900 characters: their lead and the passages
@@ -145,7 +159,10 @@ shortened. In order:
 4. If that is still not enough, an older result shrinks to its first line.
 
 Compaction is done by the loop, never by the model, so page text cannot steer
-what is kept.
+what is kept. Compaction only makes room: it never ends a run. The system
+prompt tells the model that shortened older results are normal on a long
+search and that it should keep searching and reading until it can answer
+well or the steps run out.
 
 ## Model API
 
@@ -167,13 +184,14 @@ with the same API (for example Ollama) works.
 ```
 
 - `enable_thinking` is sent only when set (`--thinking`, `--show-thinking`,
-  or a retry that turns it off). When the empty-answer retry or the citation
-  rewrite, which send it as off, get `unsupported_parameter` back (GPT-OSS),
-  they are sent again with the client's own setting.
+  or a retry that turns it off). When a request that turns it off gets
+  `unsupported_parameter` back (GPT-OSS), it is sent again with the client's
+  own setting, and so are the later ones.
 - `max_tokens` defaults to 2048, or 8192 with reasoning on.
 - Reasoning returned as `reasoning_content` is shown as progress only and is
   never sent back to the model.
-- Timeout: 1,800 s (30 minutes) per HTTP request, set in
+- Timeout for model calls: `--step-timeout` minutes (default 30) per HTTP
+  request; sandbox calls keep 1,800 s. Both are set in
   `URLSessionResearchTransport`. Replies are not streamed, so this is in
   effect the limit for one model step.
 
@@ -327,21 +345,37 @@ CLI (`tuff research <question> [options]`):
 | `--model <name>` | `default` | Model the server should use; `default` is the one selected in TUFF. |
 | `--server <url>` | `http://127.0.0.1:8080` | TUFF server; must be loopback. |
 | `--sandbox <url>` | `http://127.0.0.1:9000` | Sandbox; must be loopback. |
-| `--max-steps <1…32>` | 8 | Model turns that may use tools. |
+| `--max-steps <1…100>` | 8 | Model turns that may use tools. |
 | `--max-tokens <64…32768>` | 2048 (8192 with reasoning) | Completion tokens per turn. |
 | `--page-chars <500…20000>` | 3000 | Page text per read. |
 | `--context-chars <2000…1000000>` | from the context window | Fixed prompt budget. |
 | `--thinking on\|off` | model's own | Reasoning for Gemma and Qwen. |
 | `--show-thinking` | off | Turn reasoning on and print it. |
 | `--output <file.md>` | | Also write the report to a new file. |
+| `--search-results <1…10>` | 5 | Results per search. |
+| `--tool-calls <1…8>` | 4 | Tool calls the model may make per turn. |
+| `--min-pages <1…6>` | 3 | Pages to read: asked for in the prompt, and the target of the loop's own page opening. |
+| `--auto-open on\|off` | on | The loop opens top results itself when too few pages are read. |
+| `--nudges on\|off` | on | Ask once to search first, to open pages and to look wider. |
+| `--rewrite on\|off` | on | One rewrite when the answer cites pages that were never read. |
+| `--step-timeout <1…60>` | 30 | Minutes one model step may take before it is retried without reasoning. |
 | `--quiet` | off | No progress on stderr. |
 | `--help`, `-h` | | Print the options. |
 | `--` | | End of options; the rest is the question. |
 
-The app's Research screen sets steps (1–32), page text per read (2,000, 3,000, 5,000 or 8,000 characters, under More
-Options) and Show thinking. Show thinking is on by default in the app, which
-turns reasoning on and raises the token limit to 8192; the rest uses the
-defaults.
+The app's Research screen has the same settings with the same defaults and
+ranges: Steps and Show thinking on the main row, the rest under **More
+Options** (Thinking, token limit, page text per read, prompt budget, results
+per search, tool calls per step, pages to read, step time limit, and switches
+for auto-open, nudges and the rewrite). The app keeps them between launches
+(`@AppStorage`), and **Restore Defaults** resets them. Token limit, page text
+and prompt budget are picked from a few fixed sizes. `ResearchRunSettings` clamps every
+value to the CLI's range. Show thinking is on by default in the app, which
+turns reasoning on and raises the token limit to 8192.
+
+The limits that protect the Mac are not settings: the sandbox, its firewall,
+the loopback-only addresses, the fetch size and time limits and the report
+rules stay fixed.
 
 Sandbox environment (set before `research_sandbox.sh start`):
 
@@ -361,9 +395,9 @@ python3 Scripts/research_injection_check.py --base-url <public fixture URL> --re
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (50 tests), covering tool handling,
-  nudges, fallbacks, compaction, the rewrite and sanitising.
-- `Tests/TUFFApp/Research/` covers the app side (39 tests): run control,
+  model replies and a fake sandbox (56 tests), covering tool handling,
+  nudges, fallbacks, compaction, the rewrite, the settings and sanitising.
+- `Tests/TUFFApp/Research/` covers the app side (40 tests): run control,
   report store, formatter and service controllers.
 - The injection harness serves four hostile pages
   (`Sandbox/web-research/fixtures/injection`) and fails a run if the model

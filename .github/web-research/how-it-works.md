@@ -69,14 +69,17 @@ has nothing on your Mac it could use to follow them. See [Safety](safety.md).
 4. **Make room.** Long conversations would outgrow what the model can hold
    in mind at once (its context window). The loop shortens older pages to the
    passages that match your question, so the newest material stays complete.
+   This only makes room: the research keeps going, so long searches work.
 5. **Answer.** The model writes the answer in your question's language: a
    short answer first, then details with source numbers, then what it could
    not verify.
 6. **Save.** The report lists the answer, the sources that were really read
    and every search that was run.
 
-The number of steps is limited (8 by default, adjustable). When the budget is
-used up, the model has to answer with what it has.
+The number of steps is limited (8 by default, up to 100). When the budget is
+used up, the model has to answer with what it has. The number of pages to
+read, the results per search and each safety net below can be changed in the
+app (**More Options**) or in Terminal; see [Setup and use](setup.md).
 
 ## Safety nets for weaker answers
 
@@ -91,6 +94,7 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Answers after only one search or one page | Asks it once to look wider: other words, another language, another source. |
 | Runs out of steps with fewer than three pages read | Opens more top results before the final answer. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
+| Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
 
 If a problem remains, the report says so in a note at the end, for example
@@ -104,6 +108,9 @@ that only one search was run or that a citation matches no page read.
   listed so you can check.
 - The search engine and the websites see your internet address, as with any
   web search.
+- Late in a long run, a model can get stuck repeating a search that the
+  research keeps refusing, and so wastes its last steps. Qwen3.6 did this in
+  a 40-step test. A fix has been proposed.
 
 The full technical guide is
 [docs/WEB_RESEARCH.md](https://github.com/Osiriss664/TUFF/blob/feature/web-research/docs/WEB_RESEARCH.md)

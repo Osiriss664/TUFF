@@ -70,8 +70,13 @@ again with `cd TUFF-research`.
 
 Useful controls:
 
-- **Steps** sets how many search and read rounds the model gets (default 8).
-  8 to 12 works well for Qwen3.6.
+- **Steps** sets how many search and read rounds the model gets (default 8,
+  up to 100). 8 to 12 works well for Qwen3.6; more steps allow longer
+  searches.
+- **More Options** shows every other setting: thinking, token limit, page
+  size, prompt budget, results per search, tool calls per step, pages to
+  read, step time limit, and switches for the safety nets. The app keeps
+  your choices; **Restore Defaults** resets them.
 - **Stop Research** cancels the current question.
 - **Stop Both** stops the model server and removes the sandbox VM. The
   switch next to each one turns just that one on or off.
@@ -111,9 +116,11 @@ The answer is printed with numbered sources. Useful options:
 | Option | What it does |
 | --- | --- |
 | `--output notes.md` | Also saves the report to a new file. |
-| `--max-steps 12` | Gives the model more search and read rounds (1 to 32, default 8). |
+| `--max-steps 12` | Gives the model more search and read rounds (1 to 100, default 8). |
+| `--min-pages 4` | How many pages it should read (1 to 6, default 3). |
+| `--search-results 8` | Results per search (1 to 10, default 5). |
 | `--show-thinking` | Turns on the model's reasoning and prints it. |
-| `--help` | Lists every option. |
+| `--help` | Lists every option, including the safety-net switches. |
 
 When you are done, stop and remove the sandbox VM:
 
