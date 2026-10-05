@@ -105,7 +105,7 @@ URL (any offset) keeps its number, and the result tells the model so.
 
 ## Safeguards in the loop
 
-Each one fires at most once per run unless noted. Constants are in
+Each one fires at most once per run unless noted (the context-overflow retry can happen once per step). Constants are in
 `ResearchAgent`.
 
 | Trigger | Action | Event |
@@ -115,10 +115,10 @@ Each one fires at most once per run unless noted. Constants are in
 | Same again | Loop opens top results itself: `minimumPagesRead` (3) pages, round-robin over all searches (first hit of each search, then second hits), up to `autoOpenAttempts` (6) URLs tried, each capped at `min(pageChars, max(500, budget/2/3))`. | `openingTopResults` |
 | Repeated search (case, spacing, quotation marks and word order ignored) | Refused without reaching the search engine; after `repeatsBeforeOpening` (2) refusals with no page read, the loop opens top results as above. | `repeatedSearchRefused(query)` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
-| Step budget used up with fewer than 3 pages read | Open unread top results (per-page cap `budget/2/missing`, at least 500 characters), skipped when a fallback draft is held. | `openingTopResults` |
+| Step budget used up with fewer than 3 pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
-| Step exceeds the request timeout | Retry the step once with reasoning off; reasoning stays off for the rest of the run. | `retryingAfterTimeout` |
+| Step with reasoning on exceeds the request timeout | Retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error. | `retryingAfterTimeout` |
 | Context overflow reported by the server | Lower the characters-per-token estimate, compact to half budget, retry once. | `shortenedOlderResults` |
 
 No nudge is sent on the last step, since there is no step left to answer in.
@@ -132,13 +132,17 @@ The prompt budget in characters is
 or 16,000 when the server lists no window, or `--context-chars` if set.
 `charsPerToken` is calibrated from the server's reported `prompt_tokens`.
 Before each request, `State.compact` shortens older messages until the
-conversation fits, never touching the last message:
+conversation fits (aiming at about three quarters of the budget). The system
+prompt, the question, the newest tool result and the last message are never
+shortened. In order:
 
 1. A page read twice keeps only its newest copy.
-2. Older search results lose their snippets.
-3. Older pages keep their lead and the passages that contain words from the
-   question and the searches (in page order).
-4. If that is not enough, an older result shrinks to its first line.
+2. Older pages are cut to about 900 characters: their lead and the passages
+   that contain words from the question and the searches, in page order.
+   Older search results lose their snippets at the same time, and long older
+   draft answers (over 600 characters) are cut to their start.
+3. If that is not enough, the passages are cut to about 300 characters.
+4. If that is still not enough, an older result shrinks to its first line.
 
 Compaction is done by the loop, never by the model, so page text cannot steer
 what is kept.
@@ -163,12 +167,15 @@ with the same API (for example Ollama) works.
 ```
 
 - `enable_thinking` is sent only when set (`--thinking`, `--show-thinking`,
-  or a retry that turns it off). A server that refuses it with
-  `unsupported_parameter` (GPT-OSS) gets the request again without it.
+  or a retry that turns it off). When the empty-answer retry or the citation
+  rewrite, which send it as off, get `unsupported_parameter` back (GPT-OSS),
+  they are sent again with the client's own setting.
 - `max_tokens` defaults to 2048, or 8192 with reasoning on.
 - Reasoning returned as `reasoning_content` is shown as progress only and is
   never sent back to the model.
-- Request timeout per step: 30 minutes.
+- Timeout: 1,800 s (30 minutes) per HTTP request, set in
+  `URLSessionResearchTransport`. Replies are not streamed, so this is in
+  effect the limit for one model step.
 
 Tools:
 
@@ -192,7 +199,7 @@ JSON out.
 | `POST /v1/fetch` | `{"url": str, "offset": int ≥ 0, "max_chars": int (1–20000)}` | `{"url", "title", "text", "offset", "next_offset" (or null), "total_chars"}` |
 
 Errors are `{"error": {"message", "code"}}` with codes such as
-`invalid_argument`, `blocked_address` and `dns_error`.
+`invalid_argument`, `blocked_address`, `dns_error` and `forbidden_host`.
 
 Request rules: only `application/json` POSTs, request bodies up to 64 KB,
 and the `Host` header must be a loopback name (this blocks DNS rebinding and
@@ -208,7 +215,7 @@ Fetch rules:
   between check and connect.
 - Up to 5 redirects, each checked the same way.
 - 5 MB download cap, 15 s per network wait (`FETCH_TIMEOUT`), 45 s per
-  request overall; only HTML and plain text are read.
+  HTTP request overall (each redirect hop gets its own); only HTML and plain text are read.
 - Text extraction (trafilatura, with a fallback parser) runs in a separate
   process stopped after 15 s (`EXTRACT_TIMEOUT`), on at most 2 million
   characters.
@@ -278,6 +285,8 @@ and that a public page still loads.
 `ResearchReport.markdown` produces:
 
 ```markdown
+# <question>
+
 <answer>
 
 ## Sources
@@ -290,17 +299,20 @@ and that a public page still loads.
 - query one
 - query two
 
-_notes, if any: unread citations, budget used up, no pages read,
-cut off at the token limit, only one search_
+_One italic paragraph per note, if any: unread citations, budget used up,
+no pages read, cut off at the token limit, only one search._
 ```
+
+The Sources and Searches sections appear only when they have entries.
 
 The CLI prints this to stdout (`--output` also writes it to a file that must
 not exist yet). The app saves each report twice in
 `~/Library/Application Support/TUFF/Research Reports`: Markdown, and JSON
-(`SavedResearchReport`) with `id`, `question`, `answer`, `sources` (`number`,
-`title`, `url`), `model`, `createdAt`, `durationSeconds`, `budgetExhausted`,
-answer cut-off flag, search queries, `unknownCitations` and the progress
-`steps`. Deleting a report in the app moves both files to the Trash.
+(`SavedResearchReport`) with `id`, `question`, `answer`, `markdown` (the
+report text), `sources` (`number`, `title`, `url`), `model`, `createdAt`,
+`durationSeconds`, `budgetExhausted`, `answerWasCutOff`, `savedSearchQueries`,
+`unknownCitations` and the progress `steps`. The two optional keys are
+missing in reports saved by older versions. Deleting a report in the app moves both files to the Trash.
 
 ## Configuration
 
@@ -312,16 +324,20 @@ CLI (`tuff research <question> [options]`):
 | `--server <url>` | `http://127.0.0.1:8080` | TUFF server; must be loopback. |
 | `--sandbox <url>` | `http://127.0.0.1:9000` | Sandbox; must be loopback. |
 | `--max-steps <1…32>` | 8 | Model turns that may use tools. |
-| `--max-tokens <n>` | 2048 (8192 with reasoning) | Completion tokens per turn. |
+| `--max-tokens <64…32768>` | 2048 (8192 with reasoning) | Completion tokens per turn. |
 | `--page-chars <500…20000>` | 3000 | Page text per read. |
-| `--context-chars <n>` | from the context window | Fixed prompt budget. |
+| `--context-chars <2000…1000000>` | from the context window | Fixed prompt budget. |
 | `--thinking on\|off` | model's own | Reasoning for Gemma and Qwen. |
 | `--show-thinking` | off | Turn reasoning on and print it. |
 | `--output <file.md>` | | Also write the report to a new file. |
 | `--quiet` | off | No progress on stderr. |
+| `--help`, `-h` | | Print the options. |
+| `--` | | End of options; the rest is the question. |
 
-The app's Research screen sets steps (1–32) and Show thinking; the rest uses
-the defaults.
+The app's Research screen sets steps (1–32), page text per read (under More
+Options) and Show thinking. Show thinking is on by default in the app, which
+turns reasoning on and raises the token limit to 8192; the rest uses the
+defaults.
 
 Sandbox environment (set before `research_sandbox.sh start`):
 
