@@ -367,3 +367,11 @@ Live results are on the [test results page](test-results.md).
   other local servers too.
 - **No JavaScript.** Pages are fetched and parsed as static HTML, which keeps
   the sandbox small at the cost of some sites returning little text.
+
+## Keeping these pages current
+
+After every larger change on `feature/web-research` (a new feature, changed
+research behaviour, new or changed settings, or a security change) has been
+pushed and tested on a Mac, this page and the plain-language pages are
+updated on `main` as part of finishing that change. The commit named at the
+top of this page says which version the pages describe.
