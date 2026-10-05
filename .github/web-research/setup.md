@@ -16,7 +16,8 @@ setup once.
 - **Apple container**, installed from its
   [releases page](https://github.com/apple/container/releases) (download the
   installer package and open it).
-- **Xcode** or the Xcode command line tools, to build TUFF.
+- **Xcode** (the full app from the App Store, with Swift 6.2 or newer), to
+  build TUFF. The command line tools alone are not enough.
 - A model installed in TUFF (on its Models screen). Good choices:
   - **Gemma 4 E4B**: fast, a good start.
   - **Qwen3.6 35B-A3B**: better answers, about 1 to 8 minutes per question
@@ -45,11 +46,15 @@ git checkout feature/web-research
 swift build -c release
 ```
 
-The build takes a few minutes. Then start the app you just built:
+The first build can take a while. Then start the app you just built:
 
 ```sh
 .build/release/TUFF
 ```
+
+Leave this Terminal window open while you use the app. For the other
+commands on this page, open a new Terminal window and go to the folder
+again with `cd TUFF-research`.
 
 ## Use it in the app
 
@@ -88,7 +93,8 @@ Scripts/research_sandbox.sh start
 
 Start the model server: either turn on **Background API** on the TUFF app's
 Server screen, or run this in a second Terminal window. It serves the model
-selected in the app; add `--default-model <name>` to pick another.
+selected in the app, so select a model there first, or add
+`--default-model <name>` to pick one.
 
 ```sh
 .build/release/TUFFCommand serve

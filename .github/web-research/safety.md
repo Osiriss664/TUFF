@@ -2,8 +2,8 @@
 
 Web pages are untrusted. A page can hide text meant to trick the model (this
 is called *prompt injection*), and a program that downloads web pages can be
-attacked through what it downloads. Web research is built so that neither can
-reach your Mac, your files or your home network.
+attacked through what it downloads. Web research is built to stop either one
+from reaching your Mac, your files or your home network.
 
 [Back to the front page](../README.md) ·
 [How it works](how-it-works.md) · [Setup and use](setup.md) ·
@@ -27,8 +27,9 @@ reach your Mac, your files or your home network.
 
 ## How this was tested
 
-- **Independent review.** A separate reviewer went through the code in
-  several rounds. Every medium-severity finding was fixed and checked again.
+- **Separate review.** The code was written with Claude Code (an AI coding
+  assistant) and reviewed in several rounds by a separate Claude session.
+  Every medium-severity finding was fixed and checked again.
 - **Self-test.** `Scripts/research_sandbox.sh selftest` tries to reach your
   Mac, your network and cloud metadata addresses from inside the VM, and
   tries every port on the Mac. Everything except DNS must be refused, and it
@@ -40,7 +41,8 @@ reach your Mac, your files or your home network.
   in their latest test.
 
 These tests are strong evidence, not a guarantee. Anyone can rerun them; the
-scripts are in the repository.
+scripts are on the `feature/web-research` branch (the injection test needs
+the test pages served from a public web address).
 
 ## What it does not protect against
 
