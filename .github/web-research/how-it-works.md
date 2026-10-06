@@ -96,6 +96,8 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
+| Thinks for more than 3 minutes on one step | Stops that step and asks again with its "thinking" turned off, for the rest of the question. |
+| Fails with a server error while thinking | Asks again with its "thinking" turned off instead of giving up. |
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
 
 If a problem remains, the report says so in a note at the end, for example

@@ -75,9 +75,11 @@ Useful controls:
   searches.
 - **More Options** shows every other setting: thinking, token limit, page
   size, prompt budget, results per search, tool calls per step, pages to
-  read, step time limit, and switches for the safety nets. The app keeps
+  read, step time limit, thinking time limit (how long the model may think
+  on one step, 3 minutes by default), and switches for the safety nets. The app keeps
   your choices; **Restore Defaults** resets them.
-- **Stop Research** cancels the current question.
+- **Stop Research** cancels the current question, and the model stops
+  working on it right away, so the next question can start at once.
 - **Stop Both** stops the model server and removes the sandbox VM. The
   switch next to each one turns just that one on or off.
 - **Run Safety Check** runs the full sandbox self-test.

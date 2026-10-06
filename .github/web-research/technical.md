@@ -5,7 +5,7 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `7986989` at the time of writing, on top of TUFF 7.3.0,
+branch (commit `1333a62` at the time of writing, on top of TUFF 7.3.0,
 tested on a Mac). File paths are relative to
 that branch.
 
@@ -72,6 +72,7 @@ which validates it.
 | `Sources/TUFFCommand/Core/TUFFCommand.swift` | `tuff research …` forwards to the `TUFFResearch` binary beside it. |
 | `Sources/TUFFApp/Research/` | App side: run controller, sandbox and model-server controllers, report store, answer formatter. |
 | `Sources/TUFFApp/Mac/Research/ResearchWorkspaceView.swift` | The Research screen (Command-2). |
+| `Sources/TUFFServer/Core/HTTPServer.swift` | TUFF's HTTP server. Its `ClientHangUpWatcher` lets a client that hangs up cancel its generation (see [Model API](#model-api)). |
 | `Sandbox/web-research/` | The VM image: `Containerfile`, `entrypoint.sh`, `firewall.nft`, `server.py`, pinned `requirements.txt`, Python tests and injection fixtures. |
 | `Scripts/research_sandbox.sh` | `build`, `start`, `stop`, `status`, `selftest` for the VM. |
 | `Scripts/research_injection_check.py` | Prompt-injection harness against the fixtures. |
@@ -125,7 +126,8 @@ can happen in every step). Defaults are shown; most can be changed (see
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
-| Step with reasoning on exceeds the request timeout | Retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error. | `retryingAfterTimeout` |
+| Step with reasoning on exceeds `thinkingMinutes` (3) or the request timeout | Cancel the request (TUFF stops generating it) and retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error at the step timeout. | `retryingAfterTimeout` |
+| HTTP 5xx on a step with reasoning on (Gemma 4 26B once wrote a tool call the server could not read) | Retry the step once with reasoning off; reasoning stays off for the rest of the run. Not for `context_length_exceeded` or `unsupported_parameter`, which have their own handling. | `retryingAfterModelError` |
 | Context overflow reported by the server | Lower the characters-per-token estimate, compact to half budget and retry; if it overflows again, shorten even the newest results and retry once more. | `shortenedOlderResults` |
 
 The repeated-search stop was added after Qwen3.6, from step 25 of a 40-step
@@ -193,7 +195,22 @@ with the same API (for example Ollama) works.
 - Timeout for model calls: `--step-timeout` minutes (default 30) per HTTP
   request; sandbox calls keep 1,800 s. Both are set in
   `URLSessionResearchTransport`. Replies are not streamed, so this is in
-  effect the limit for one model step.
+  effect the limit for one model step. A request with reasoning on also
+  gets `--thinking-limit` (default 3 minutes, including any wait in TUFF's
+  queue): `URLSessionResearchTransport.send(…, timeout:)` races the request
+  against that limit and cancels it when the limit wins. This applies only
+  when reasoning is turned on (`--thinking on`, `--show-thinking` or the
+  app's Show thinking), not when it is left to the model's default.
+- Cancelling a request (the limit above, **Stop Research**, or ending the
+  process) closes its connection, and TUFF stops generating the reply.
+  TUFF's server used to miss this: NIO's `HTTPServerPipelineHandler` stops
+  reading the socket while a reply is pending, so on macOS a client's FIN
+  was only seen once the reply was written, and the model generated to the
+  end for nobody while the next request waited. `ClientHangUpWatcher`, below
+  the HTTP handlers, keeps reading in that state (buffering at most 1 MiB of
+  early bytes), so the hang-up closes the channel and cancels the request
+  (server log: `cancelled by client … phase=generating`). A client that
+  half-closes its side while waiting is treated as gone.
 
 Tools:
 
@@ -361,6 +378,7 @@ CLI (`tuff research <question> [options]`):
 | `--nudges on\|off` | on | Ask once to search first, to open pages and to look wider. |
 | `--rewrite on\|off` | on | One rewrite when the answer cites pages that were never read. |
 | `--step-timeout <1…60>` | 30 | Minutes one model step may take before it is retried without reasoning. |
+| `--thinking-limit <1…60>` | 3 | Minutes a step with reasoning on may take before it is cancelled and retried without reasoning, which stays off for the run. |
 | `--quiet` | off | No progress on stderr. |
 | `--help`, `-h` | | Print the options. |
 | `--` | | End of options; the rest is the question. |
@@ -368,7 +386,8 @@ CLI (`tuff research <question> [options]`):
 The app's Research screen has the same settings with the same defaults and
 ranges: Steps and Show thinking on the main row, the rest under **More
 Options** (Thinking, token limit, page text per read, prompt budget, results
-per search, tool calls per step, pages to read, step time limit, and switches
+per search, tool calls per step, pages to read, step time limit, thinking
+time limit, and switches
 for auto-open, nudges and the rewrite). The app keeps them between launches
 (`@AppStorage`), and **Restore Defaults** resets them. Token limit, page text
 and prompt budget are picked from a few fixed sizes. `ResearchRunSettings` clamps every
@@ -397,11 +416,16 @@ python3 Scripts/research_injection_check.py --base-url <public fixture URL> --re
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (59 tests), covering tool handling,
-  nudges, fallbacks, the repeated-search stop, compaction, the rewrite, the
-  settings and sanitising.
+  model replies and a fake sandbox (61 tests), covering tool handling,
+  nudges, fallbacks, the repeated-search stop, the thinking limit and the
+  retry after a model error, compaction, the rewrite, the settings and
+  sanitising.
+- `Tests/TUFFServer/HTTPServerTests.swift`
+  `clientClosingDuringNonStreamingGenerationCancelsIt` checks that a client
+  closing during a non-streaming generation cancels it.
 - `Tests/TUFFApp/Research/` covers the app side (41 tests): run control,
-  report store, formatter and service controllers.
+  report store, formatter and service controllers. The sandbox-controller
+  tests keep settings in memory, so they write no preference files.
 - The injection harness serves four hostile pages
   (`Sandbox/web-research/fixtures/injection`) and fails a run if the model
   opened a planted address or lost the page's real facts.
