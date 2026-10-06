@@ -78,11 +78,26 @@ public struct OpenAIChatMessage: Codable, Equatable, Sendable {
     public let toolCalls: [OpenAIToolCall]?
     public let toolCallID: String?
     public let name: String?
+    /// An assistant turn's reasoning as the model generated it. Only Qwen
+    /// (ChatML) history keeps it; every other family drops it.
+    public let reasoningContent: String?
 
     enum CodingKeys: String, CodingKey {
         case role, content, name
         case toolCalls = "tool_calls"
         case toolCallID = "tool_call_id"
+        case reasoningContent = "reasoning_content"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+        content = try container.decodeIfPresent(OpenAIMessageContent.self, forKey: .content)
+        toolCalls = try container.decodeIfPresent([OpenAIToolCall].self, forKey: .toolCalls)
+        toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        // Only a string is kept; any other shape is ignored as it always was.
+        reasoningContent = try? container.decodeIfPresent(String.self, forKey: .reasoningContent)
     }
 }
 
@@ -158,10 +173,11 @@ public struct OpenAIChatRequest: Codable, Equatable, Sendable {
     /// from `enable_thinking` or `chat_template_kwargs.enable_thinking`.
     public let enableThinking: Bool?
     /// Qwen's request to render earlier assistant reasoning back into the
-    /// prompt. TUFF never returns reasoning and drops any a client sends back,
-    /// so no history carries reasoning and this cannot change the prompt. It
-    /// is type-checked and accepted because Qwen clients such as oh-my-pi send
-    /// it on every request.
+    /// prompt. Qwen (ChatML) history keeps an assistant turn's
+    /// `reasoning_content`, and this renders it back for every turn, so a
+    /// thinking conversation re-renders what the model generated and the prompt
+    /// cache can reuse it. Other families still drop reasoning a client sends
+    /// back, so for them this cannot change the prompt.
     public let preserveThinking: Bool?
     /// As sent. Only `enable_thinking` and `preserve_thinking` are accepted,
     /// and both are folded into the fields above.
@@ -531,6 +547,9 @@ public struct ValidatedChatRequest: Sendable {
     /// captured during validation so queued requests and cache comparisons do
     /// not change identity across midnight.
     public let harmonyCurrentDate: String?
+    /// Render every assistant turn's reasoning, not only those after the last
+    /// user message. Meaningful only for ChatML, where history keeps it.
+    public let preserveThinking: Bool
     /// Every staging directory this request's image files live in. The parser
     /// and the validator's store each stage under their own lease, and a
     /// request may carry files from both, so dropping either would delete
@@ -549,7 +568,8 @@ public struct ValidatedChatRequest: Sendable {
         maximumCompletionTokens: Int,
         reasoning: ChatReasoning = .off,
         reasoningEffort: GPTOSSReasoningEffort? = nil,
-        harmonyCurrentDate: String? = nil
+        harmonyCurrentDate: String? = nil,
+        preserveThinking: Bool = false
     ) {
         self.messages = messages
         self.multimodalMessages = multimodalMessages
@@ -563,6 +583,7 @@ public struct ValidatedChatRequest: Sendable {
         self.reasoning = reasoning
         self.reasoningEffort = reasoningEffort
         self.harmonyCurrentDate = harmonyCurrentDate
+        self.preserveThinking = preserveThinking
         self.attachmentLeases = []
     }
 
@@ -579,6 +600,7 @@ public struct ValidatedChatRequest: Sendable {
         reasoning: ChatReasoning,
         reasoningEffort: GPTOSSReasoningEffort?,
         harmonyCurrentDate: String?,
+        preserveThinking: Bool,
         attachmentLeases: [ServerAttachmentLease]
     ) {
         self.messages = messages
@@ -593,6 +615,7 @@ public struct ValidatedChatRequest: Sendable {
         self.reasoning = reasoning
         self.reasoningEffort = reasoningEffort
         self.harmonyCurrentDate = harmonyCurrentDate
+        self.preserveThinking = preserveThinking
         self.attachmentLeases = attachmentLeases
     }
 }
@@ -753,6 +776,7 @@ public enum OpenAIRequestValidator {
                                     reasoning: reasoning,
                                     reasoningEffort: reasoningEffort,
                                     harmonyCurrentDate: harmonyCurrentDate,
+                                    preserveThinking: request.preserveThinking == true,
                                     attachmentLeases: validatedMessages.leases)
     }
 
@@ -992,8 +1016,13 @@ public enum OpenAIRequestValidator {
                 throw invalid("message content is required",
                               "messages", "invalid_message")
             }
+            // Qwen's template renders reasoning_content, and the KV cache holds
+            // it, so dropping it would make the re-rendered prompt miss.
+            let thinking = dialect == .chatml && role == .assistant
+                ? message.reasoningContent : nil
             result.append(GFTokenizer.Message(role: role,
                                               content: content,
+                                              thinking: thinking,
                                               toolCalls: calls,
                                               toolCallID: message.toolCallID,
                                               name: message.name))
@@ -1003,6 +1032,7 @@ public enum OpenAIRequestValidator {
             multimodal.append(MultimodalMessage(
                 role: role,
                 content: orderedContent,
+                thinking: thinking,
                 toolCalls: calls,
                 toolCallID: message.toolCallID,
                 name: message.name))

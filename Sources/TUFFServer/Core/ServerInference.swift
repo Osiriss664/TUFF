@@ -911,7 +911,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                 tools: request.tools,
                 family: model.config.family,
                 modelVariant: model.config.variant,
-                reasoning: request.reasoning)
+                reasoning: request.reasoning,
+                preserveThinking: chatDialect == .chatml && request.preserveThinking)
         } catch let error as MultimodalPromptRendererError {
             throw Self.clientError(for: error) ?? error
         }
@@ -1216,12 +1217,14 @@ public actor ServerModelSession: ServerInferenceBackend {
             promptIDs = try tokenizer.encodeToolChat(
                 messages: request.messages,
                 tools: request.tools,
-                reasoning: request.reasoning)
+                reasoning: request.reasoning,
+                preserveThinking: chatDialect == .chatml && request.preserveThinking)
         } else {
             let rendered = try tokenizer.applyChatTemplate(
                 request.messages,
                 modelVariant: model.config.variant,
-                reasoning: request.reasoning)
+                reasoning: request.reasoning,
+                preserveThinking: chatDialect == .chatml && request.preserveThinking)
             promptIDs = tokenizer.encode(rendered, addBOS: false)
         }
         guard promptIDs.count < maxContext else {

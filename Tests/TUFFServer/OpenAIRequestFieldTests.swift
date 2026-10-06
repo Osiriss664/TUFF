@@ -110,6 +110,31 @@ struct OpenAIRequestFieldTests {
         #expect(try Self.decode(#""chat_template_kwargs":{}"#).enableThinking == nil)
     }
 
+    /// The KV cache holds the reasoning the model generated, so a ChatML
+    /// history keeps it to re-render the same prompt.
+    @Test func chatMLAssistantReasoningIsKeptAndOtherFamiliesDropIt() throws {
+        let body = #"""
+        {"model":"m","preserve_thinking":true,"messages":[
+        {"role":"user","content":"q"},
+        {"role":"assistant","content":"a","reasoning_content":"  chain\n"},
+        {"role":"user","content":"next","reasoning_content":"ignored"}]}
+        """#
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(body.utf8))
+        #expect(request.messages[1].reasoningContent == "  chain\n")
+
+        let chatml = try OpenAIRequestValidator.validate(request, modelID: "m", dialect: .chatml)
+        #expect(chatml.messages[1].thinking == "  chain\n")
+        #expect(chatml.messages[2].thinking == nil)
+        #expect(chatml.preserveThinking)
+
+        let gemma = try OpenAIRequestValidator.validate(request, modelID: "m", dialect: .gemma)
+        #expect(gemma.messages[1].thinking == nil)
+
+        let plain = try Self.decode("")
+        #expect(!(try OpenAIRequestValidator.validate(plain, modelID: "m", dialect: .chatml)
+            .preserveThinking))
+    }
+
     @Test func chatTemplateKwargsAcceptOnlyTheThinkingSwitches() throws {
         let unknown = try Self.rejection(#""chat_template_kwargs":{"add_vision_id":true}"#)
         #expect(unknown.code == "unknown_parameter")
