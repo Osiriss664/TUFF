@@ -74,7 +74,10 @@ has nothing on your Mac it could use to follow them. See [Safety](safety.md).
    short answer first, then details with source numbers, then what it could
    not verify.
 6. **Save.** The report lists the answer, the sources that were really read
-   and every search that was run.
+   and every search that was run. If the answer quotes a number that none of
+   the pages it cites contain, a "Figure check" section lists it. This is
+   only a hint: it cannot catch a wrong year, date or word, and a page may
+   write a figure in words or in another unit.
 
 The number of steps is limited (8 by default, up to 100). When the budget is
 used up, the model has to answer with what it has. The number of pages to
@@ -91,22 +94,34 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Answers from search previews without opening a page | Asks it once to open pages. |
 | Does it again | Opens the top three search results itself, taking the first hit of every search before any second hit, and hands them over. |
 | Repeats the same searches without reading anything | Refuses the repeats, then opens the top results for it. |
-| Spends two steps in a row only repeating searches it already ran | Stops the research there and asks for the answer, so no steps are wasted. The report notes the early stop. |
+| Opens a page part it has already read | Refuses it. After older results were shortened to make room, it may read it once more. |
+| Spends two steps in a row only repeating searches or page reads it already did | Stops the research there and asks for the answer, so no steps are wasted. The report notes the early stop. |
 | Answers after only one search or one page | Asks it once to look wider: other words, another language, another source. |
 | Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
 | Thinks for more than 3 minutes on one step | Stops that step and asks again with its "thinking" turned off, for the rest of the question. |
 | Fails with a server error while thinking | Asks again with its "thinking" turned off instead of giving up. |
+| Fails with a server error with "thinking" already off | Sends the step once more. |
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
 
 If a problem remains, the report says so in a note at the end, for example
 that only one search was run or that a citation matches no page read.
 
+If a run fails or is stopped after it already searched or read a page, you
+still get a report. It has no answer, says that the research ended early and
+why, and lists the sources and searches so far.
+
+While a run is going, your Mac does not go to sleep on its own (the screen
+may still turn off, and closing the lid still puts it to sleep). The app
+shows how long a run took as, for example, "19 s", "3 min" or "14 min 5 s".
+
 ## What it cannot do
 
 - Pages are read without running JavaScript, so some modern sites give
   little text.
+- Some sites block all automated requests with a bot check (for example
+  Indonesia's statistics office BPS), so they cannot be read.
 - A model can still be fooled by a page that is simply wrong. The sources are
   listed so you can check.
 - The search engine and the websites see your internet address, as with any

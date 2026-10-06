@@ -65,8 +65,11 @@ again with `cd TUFF-research`.
    does.
 4. Type your question and start it. You see each search and page read as it
    happens. Turn on **Show thinking** to also see the model's reasoning.
+   Your Mac stays awake while the question runs.
 5. The finished report appears in the sidebar. Reports are saved as Markdown
-   and JSON in `~/Library/Application Support/TUFF/Research Reports`.
+   and JSON in `~/Library/Application Support/TUFF/Research Reports`. If a
+   question fails or you press Stop after it searched or read something, a
+   report without an answer is saved too, listing what was found.
 
 Useful controls:
 
@@ -113,7 +116,10 @@ Then ask a question:
 .build/release/TUFFCommand research "How does Apple container isolate each container?"
 ```
 
-The answer is printed with numbered sources. Useful options:
+The answer is printed with numbered sources. The Mac stays awake while it
+runs. If the run fails after it searched or read a page, the report without
+an answer is still printed (and written to `--output`), and the command ends
+with an error status. Useful options:
 
 | Option | What it does |
 | --- | --- |

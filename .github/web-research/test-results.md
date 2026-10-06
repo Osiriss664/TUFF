@@ -2,8 +2,10 @@
 
 How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
-They were run on 5 October 2026 with the code at commit `4a94397` on the
-`feature/web-research` branch.
+The five-question comparison was run on 5 October 2026 with the code at commit
+`4a94397`; the automated tests and the checks of the newest changes were run
+on 6 October 2026 with commit `3263de4`, both on the `feature/web-research`
+branch.
 
 [Back to the front page](../README.md) ·
 [How it works](how-it-works.md) · [Safety](safety.md) ·
@@ -12,8 +14,51 @@ They were run on 5 October 2026 with the code at commit `4a94397` on the
 
 ## Automated tests
 
+Commit `3263de4`:
+
+- Research loop tests: 80 of 80 passed.
+- Research app tests: 45 of 45 passed.
+- TUFF server tests: 161 of 162 passed. The one failure is a known
+  connection-limit test.
+- Full test suite: only the 4 known failures that were already there before.
+- Sandbox: 40 Python tests and the self-test passed.
+
+## Newest changes on a Mac (commit 3263de4)
+
+- **Prompt cache with thinking.** With thinking on, Qwen reused its cached
+  prompt on steps 3 to 5 (2,853, 3,272 and 4,806 tokens); before, nothing was
+  reused on any thinking step. Gemma reused it on every follow-up step.
+- **Mac stays awake.** While a run was going, the Mac was held awake; it was
+  released after a normal end, after an error and after the command was
+  ended.
+- **Partial report.** With the model server stopped in the middle of a run,
+  the command exited with an error and still wrote a report with no answer,
+  an "ended early" note, the three pages read and the searches.
+- **Slow official sites.** Through the sandbox, bi.go.id loaded in 6.4 s,
+  and a Bank Indonesia page that had timed out before loaded in 3.2 s.
+  Indonesia's statistics office (BPS) blocks all automated requests with a
+  bot check, so it cannot be read.
+- **Figure check.** No false alarms in the runs; the Zugspitze height was
+  found on the cited page. It is blind to wrong years, dates and words: one
+  answer about a Spanish election got the year and the outcome wrong, and
+  the check could not see it.
+
+## Open points
+
+- If a model answers on its very last step without having read a page, the
+  loop does not open pages for it (seen with Gemma 4 26B, 0 pages read; the
+  report says so).
+- The prompt cache still misses after a turn with two tool calls and at the
+  final request without tools.
+- Ending the command while the model is still reading in the prompt may not
+  stop the server at once.
+- In one Qwen run only 1 of 3 wanted pages was read.
+- An error message in a partial report can end with a doubled full stop.
+
+## Automated tests (earlier run)
+
 - Research loop tests: 50 of 50 passed.
-- Research app tests: 39 of 39 passed.
+- Research app tests: 39 of 39 passed (commit `4a94397`).
 
 ## Five questions, two models
 
