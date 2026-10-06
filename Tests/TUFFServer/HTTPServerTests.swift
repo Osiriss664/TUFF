@@ -681,6 +681,42 @@ struct HTTPServerTests {
         #expect(await !server.hasActiveRequest)
     }
 
+    @Test func clientClosingDuringNonStreamingGenerationCancelsIt() async throws {
+        // A plain close (FIN, as URLSession sends when a task is cancelled),
+        // while the response is pending and the pipeline holds reads back.
+        let backend = CancellableServerBackend()
+        let server = TUFFHTTPServer(
+            modelID: "test-model",
+            queueLimit: 1,
+            backend: backend)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let socket = try connectedSocket(port: port)
+        let body = #"{"model":"test-model","messages":[{"role":"user","content":"wait"}],"stream":false}"#
+        try writeAll(socket: socket, text: httpRequest(
+            port: port, body: body, connection: "keep-alive"))
+
+        let startDeadline = ContinuousClock.now + .seconds(2)
+        while await backend.startedCount == 0, ContinuousClock.now < startDeadline {
+            await Task.yield()
+        }
+        #expect(await backend.startedCount == 1)
+        Darwin.close(socket)
+
+        let cancelDeadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < cancelDeadline {
+            let cancelled = await backend.cancellationCount
+            let open = await server.acceptedConnectionCount
+            if cancelled == 1, open == 0 { break }
+            await Task.yield()
+        }
+        #expect(await backend.cancellationCount == 1)
+        #expect(await server.acceptedConnectionCount == 0)
+
+        try await server.shutdown()
+        #expect(await !server.hasActiveRequest)
+    }
+
     @Test func shutdownDuringPreparationNeverStartsGeneration() async throws {
         let backend = CancellationIgnoringPreparationBackend()
         let server = TUFFHTTPServer(

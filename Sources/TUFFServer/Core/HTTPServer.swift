@@ -59,8 +59,9 @@ public actor TUFFHTTPServer {
             .childChannelInitializer { channel in
                 childChannels.insert(channel)
                 do {
-                    try channel.pipeline.syncOperations.addHandler(
-                        IdleStateHandler(readTimeout: idleTimeout))
+                    try channel.pipeline.syncOperations.addHandlers(
+                        IdleStateHandler(readTimeout: idleTimeout),
+                        ClientHangUpWatcher())
                 } catch {
                     return channel.eventLoop.makeFailedFuture(error)
                 }
@@ -948,6 +949,58 @@ private final class ChildChannelRegistry: Sendable {
 
     var count: Int {
         state.withLock { $0.channels.count }
+    }
+}
+
+/// NIO's HTTP pipeline handler stops reading the socket while a response is
+/// pending. A client that hangs up during a long non-streaming generation (a
+/// stopped research run, a cancelled request) then goes unnoticed: the
+/// hang-up is only seen once the reply is written, so the model generates to
+/// the end for nobody and the next request waits behind it. This handler sits
+/// below the HTTP handlers and keeps reading while a read is held back, so
+/// the hang-up closes the channel, which cancels the request. Bytes that
+/// arrive meanwhile go up as usual and the pipeline handler buffers them;
+/// past `unreadLimit` of them, reading waits for the pipeline again.
+final class ClientHangUpWatcher: ChannelDuplexHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = IOData
+    typealias OutboundOut = IOData
+
+    static let unreadLimit = 1 << 20
+
+    /// Whether a read passed through since the last read cycle ended.
+    private var readRequested = false
+    /// Whether this handler, not the pipeline, asked for the current read.
+    private var watching = false
+    private var bytesWhileWatching = 0
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        if watching {
+            bytesWhileWatching += unwrapInboundIn(data).readableBytes
+        }
+        context.fireChannelRead(data)
+    }
+
+    func channelReadComplete(context: ChannelHandlerContext) {
+        readRequested = false
+        context.fireChannelReadComplete()
+        // With autoRead, the channel asks for the next read right after this
+        // event. If the pipeline held it back, read anyway.
+        let box = SendableContext(context)
+        context.eventLoop.execute {
+            guard !self.readRequested, box.value.channel.isActive,
+                  self.bytesWhileWatching < Self.unreadLimit else { return }
+            self.watching = true
+            box.value.read()
+        }
+    }
+
+    func read(context: ChannelHandlerContext) {
+        readRequested = true
+        watching = false
+        bytesWhileWatching = 0
+        context.read()
     }
 }
 
