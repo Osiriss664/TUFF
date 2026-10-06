@@ -960,7 +960,9 @@ private final class ChildChannelRegistry: Sendable {
 /// below the HTTP handlers and keeps reading while a read is held back, so
 /// the hang-up closes the channel, which cancels the request. Bytes that
 /// arrive meanwhile go up as usual and the pipeline handler buffers them;
-/// past `unreadLimit` of them, reading waits for the pipeline again.
+/// past `unreadLimit` of them, reading waits for the pipeline again. A client
+/// that half-closes its side while waiting for a reply is now treated as
+/// gone, as half-closure is not allowed on these channels.
 final class ClientHangUpWatcher: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer
