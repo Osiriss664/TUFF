@@ -14,6 +14,9 @@ branch.
 
 ## Automated tests
 
+Commit `3241e09`: research loop tests 109 of 109 and research app tests
+45 of 45 passed.
+
 Commit `ff9743e`: research loop tests 87 of 87 passed, including the new
 date checks.
 
@@ -47,6 +50,24 @@ Commit `3263de4`:
   wrong. Since `ff9743e` it also checks years and dates, so that date is now
   flagged; a wrong outcome in words is still not caught.
 
+## Six questions again with Qwen (commit 3241e09)
+
+Six of the ten questions ran again with Qwen3.6 35B-A3B, thinking off and
+default settings, after three fixes: the figure check now also flags a
+figure next to the wrong thing and names not on the cited pages, and the
+model is asked to read after three searches without opening a page. All six
+ran without errors in 21 min 49 s.
+
+- **Leipzig libraries:** now correct; the wrong closing date did not come
+  back, so the new "found, but not near" check had nothing to flag in these
+  runs.
+- **Communist groups in Berlin:** the request to read came after three
+  searches, and the model then opened a page.
+- **Apple container:** the wrong macOS name did not come back.
+- **Bali:** the loop opened pages for the model twice during the run.
+- **Figure check:** 18 flags in 3 runs and no false alarms; 14 of them were
+  figures the Bali answer gave to a blog that does not contain them.
+
 ## Ten questions with Qwen (commit ff9743e)
 
 All ten questions from the earlier long test ran again with Qwen3.6 35B-A3B,
@@ -68,11 +89,15 @@ took 46 min 50 s, with no errors.
 
 ## Open points
 
+- In three of six runs (commit `3241e09`) Qwen set few or no source numbers
+  like [1]. Figures in sentences without one are not checked, so a wrong
+  seat count in the Spain answer went through.
+- Lowercase names and short labels (such as "M1-M4") are not checked.
+- The Bali answer came back in English although the question asked for
+  German, and the heat pump answer was cut off at the token limit (the
+  report says so).
 - In two of ten runs the rewrite turn still left one citation to a page that
   was not read (the report says so).
-- In one run Qwen only searched for 8 steps and never opened a page; only
-  the automatic page opening at the end gave it sources. The reminder to read
-  pages only comes when the model answers without using a tool.
 - Gemma 4 26B once answered on its very last step without having read a
   page (the report says so). Qwen3.6 35B-A3B is the recommended model for
   research; Gemma 4 is better kept for chat.

@@ -5,7 +5,7 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `ff9743e` at the time of writing, on top of TUFF 7.3.0,
+branch (commit `3241e09` at the time of writing, on top of TUFF 7.3.0,
 tested on a Mac). File paths are relative to
 that branch.
 
@@ -122,12 +122,14 @@ can happen in every step). Defaults are shown; most can be changed (see
 | --- | --- | --- |
 | Answer without any tool call | Ask to search first (`searchFirstRequest`). | `askingToSearchFirst` |
 | Answer after searching, no page read | Ask to open pages (`readPagesRequest`). | `askingToReadPages` |
+| `searchStepsBeforeReading` (3) steps with tool calls, search results and still no page read, not on the last step | Ask to open pages (`searchedWithoutReadingRequest`, appended after the tool results), once, sharing the flag with the request above. | `askingToReadPages` |
+| `searchStepsAfterRequest` (2) more such steps (or after the first 3 with `--nudges off`) | Loop opens top results mid-run as below and continues (`searchedWithoutOpeningRequest`); at most once per run, not with `--auto-open off`. | `openingTopResults` |
 | Same again (or at once with `--nudges off`) | Loop opens top results itself: `minimumPagesRead` (3) pages, round-robin over all searches (first hit of each search, then second hits), up to `autoOpenAttempts` (6) URLs tried, each capped at `min(pageChars, max(500, budget/2/wanted))`. Off with `--auto-open off`. | `openingTopResults` |
 | Repeated search (case, spacing, quotation marks and word order ignored) | Refused without reaching the search engine; after `repeatsBeforeOpening` (2) refusals with no page read, the loop opens top results as above (not with `--auto-open off`). | `repeatedSearchRefused(query)` |
 | `refusedStepsBeforeAnswering` (2) steps in a row in which every executed tool call was a refused repeat (search or page open), not on the last step | Stop the step loop and go to the final answer (`repeatedSearchesStopRequest`), with the top-up below. A step with any new search or page read, or the in-loop auto-open above, resets the count. The progress reads "only repeated searches or pages; stopping and asking for the answer". Always on. The report gets `stoppedRepeatedSearches` (not `budgetExhausted`). | `stoppingRepeatedSearches` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
 | Step budget used up, or stopped for repeated searches, with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
-| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain | The report gets a "Figure check" section listing them; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: wrong words and names are not caught, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
+| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain. Also: a full date, or a number with at least 3 significant digits, found on a cited page but with none of the sentence's name words (capitalized words not first in the sentence or after `:`/`|`, minus stop words, months, weekdays, units and currency codes) within 300 characters of any occurrence there; and name phrases missing from the cited pages (strong: a word with an inner capital, or an all-caps or inner-capital word followed by a number, not a year; weak: two or more capitalized words, linking words such as `der`/`of` allowed, checked only when the answer and a cited page are in the same language by a function-word count). Sentences without citations are checked for strong names only, against all pages read; headings and source-list lines are skipped. Names match as a substring of a page word after simple stemming; page and answer are Unicode-normalized | The report gets a "Figure check" section with up to three lists (not on the cited pages; on a page but not near what the sentence names; names not found), 20 points in all; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: lowercase names and numbers in uncited sentences are not checked, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
@@ -362,8 +364,9 @@ early and why._
 ```
 
 The Sources and Searches sections appear only when they have entries. A
-"Figure check" section lists numbers in cited sentences that none of the
-cited pages contain; it appears only when there are any. A partial report
+"Figure check" section lists figures and dates in cited sentences that the
+cited pages do not contain or only have away from what the sentence names,
+and names the pages do not mention; it appears only when there are any. A partial report
 (see the safeguards) has no answer.
 
 While a run goes, the Mac does not go to idle system sleep (`TUFFResearch`
@@ -444,7 +447,7 @@ python3 Scripts/research_injection_check.py --base-url <public fixture URL> --re
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (87 tests), covering tool handling,
+  model replies and a fake sandbox (109 tests), covering tool handling,
   nudges, fallbacks, the repeated-search stop, repeated page refusal, the
   figure check, partial reports, the thinking limit and the
   retry after a model error, compaction, the rewrite, the settings and
