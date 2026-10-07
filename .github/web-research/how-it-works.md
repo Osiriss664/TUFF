@@ -75,9 +75,10 @@ has nothing on your Mac it could use to follow them. See [Safety](safety.md).
    not verify.
 6. **Save.** The report lists the answer, the sources that were really read
    and every search that was run. If the answer quotes a number that none of
-   the pages it cites contain, a "Figure check" section lists it. This is
-   only a hint: it cannot catch a wrong year, date or word, and a page may
-   write a figure in words or in another unit.
+   the pages it cites contain, a "Figure check" section lists it. The same
+   goes for years and dates (in German and English forms). This is only a
+   hint: it cannot catch a wrong word or name, and a page may write a figure
+   in words or in another unit.
 
 The number of steps is limited (8 by default, up to 100). When the budget is
 used up, the model has to answer with what it has. The number of pages to
@@ -104,6 +105,7 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Fails with a server error while thinking | Asks again with its "thinking" turned off instead of giving up. |
 | Fails with a server error with "thinking" already off | Sends the step once more. |
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
+| Takes too long on one step with "thinking" already off | Shortens older results and asks once more. |
 
 If a problem remains, the report says so in a note at the end, for example
 that only one search was run or that a citation matches no page read.

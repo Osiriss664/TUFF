@@ -5,7 +5,7 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `3263de4` at the time of writing, on top of TUFF 7.3.0,
+branch (commit `ff9743e` at the time of writing, on top of TUFF 7.3.0,
 tested on a Mac). File paths are relative to
 that branch.
 
@@ -127,11 +127,11 @@ can happen in every step). Defaults are shown; most can be changed (see
 | `refusedStepsBeforeAnswering` (2) steps in a row in which every executed tool call was a refused repeat (search or page open), not on the last step | Stop the step loop and go to the final answer (`repeatedSearchesStopRequest`), with the top-up below. A step with any new search or page read, or the in-loop auto-open above, resets the count. The progress reads "only repeated searches or pages; stopping and asking for the answer". Always on. The report gets `stoppedRepeatedSearches` (not `budgetExhausted`). | `stoppingRepeatedSearches` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
 | Step budget used up, or stopped for repeated searches, with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
-| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; years, dates, ordinals and single digits skipped) that none of its cited pages contain | The report gets a "Figure check" section listing them; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: wrong years, dates and words are not caught, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
+| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain | The report gets a "Figure check" section listing them; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: wrong words and names are not caught, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
 | Answer cites numbers that match no read source, at least one source read | Ask once, reasoning off, to rewrite from read pages only. Kept only if complete, citing fewer unread numbers and no new one, and at least a third as long; otherwise the original stays. | `revisingUnreadCitations` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
 | Empty answer (often reasoning used all tokens) | Ask once more with reasoning off (`answerNowRequest`); error `noAnswer` if empty again. | `retryingEmptyAnswer` |
-| Step with reasoning on exceeds `thinkingMinutes` (3) or the request timeout | Cancel the request (TUFF stops generating it) and retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, the run stops with an error at the step timeout. | `retryingAfterTimeout` |
+| Step with reasoning on exceeds `thinkingMinutes` (3) or the request timeout | Cancel the request (TUFF stops generating it) and retry the step once with reasoning off; reasoning stays off for the rest of the run. With reasoning already off, older results are shortened to half the budget and the step is asked once more (`retryingAfterTimeoutShorter`); a second timeout ends the run with a partial report. | `retryingAfterTimeout` |
 | HTTP 5xx on a step with reasoning on (Gemma 4 26B once wrote a tool call the server could not read) | Retry the step once with reasoning off; reasoning stays off for the rest of the run. Not for `context_length_exceeded` or `unsupported_parameter`, which have their own handling. | `retryingAfterModelError` |
 | HTTP 5xx on a step that already has reasoning off | Send the step once more unchanged; a second failure ends the run. A step gets at most one retry. | `retryingAfterModelErrorAgain` |
 | Run fails or is stopped after at least one search or page read | Keep a partial report: no answer, an "ended early" note with the reason, the sources and the searches. The app saves it (Stop too); the CLI prints it, writes `--output` and exits 1. Nothing is kept if the run ended before any search or page. | |
@@ -444,7 +444,7 @@ python3 Scripts/research_injection_check.py --base-url <public fixture URL> --re
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (80 tests), covering tool handling,
+  model replies and a fake sandbox (87 tests), covering tool handling,
   nudges, fallbacks, the repeated-search stop, repeated page refusal, the
   figure check, partial reports, the thinking limit and the
   retry after a model error, compaction, the rewrite, the settings and

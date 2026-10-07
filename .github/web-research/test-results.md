@@ -4,7 +4,7 @@ How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
 The five-question comparison was run on 5 October 2026 with the code at commit
 `4a94397`; the automated tests and the checks of the newest changes were run
-on 6 October 2026 with commit `3263de4`, both on the `feature/web-research`
+on 6 and 7 October 2026 with commits `3263de4` and `ff9743e`, both on the `feature/web-research`
 branch.
 
 [Back to the front page](../README.md) ·
@@ -13,6 +13,9 @@ branch.
 [Technical reference](technical.md)
 
 ## Automated tests
+
+Commit `ff9743e`: research loop tests 87 of 87 passed, including the new
+date checks.
 
 Commit `3263de4`:
 
@@ -39,15 +42,16 @@ Commit `3263de4`:
   Indonesia's statistics office (BPS) blocks all automated requests with a
   bot check, so it cannot be read.
 - **Figure check.** No false alarms in the runs; the Zugspitze height was
-  found on the cited page. It is blind to wrong years, dates and words: one
-  answer about a Spanish election got the year and the outcome wrong, and
-  the check could not see it.
+  found on the cited page. At `3263de4` it was blind to wrong years and
+  dates: one answer about a Spanish election got the date and the outcome
+  wrong. Since `ff9743e` it also checks years and dates, so that date is now
+  flagged; a wrong outcome in words is still not caught.
 
 ## Open points
 
-- If a model answers on its very last step without having read a page, the
-  loop does not open pages for it (seen with Gemma 4 26B, 0 pages read; the
-  report says so).
+- Gemma 4 26B once answered on its very last step without having read a
+  page (the report says so). Qwen3.6 35B-A3B is the recommended model for
+  research; Gemma 4 is better kept for chat.
 - The prompt cache still misses after a turn with two tool calls and at the
   final request without tools.
 - Ending the command while the model is still reading in the prompt may not
