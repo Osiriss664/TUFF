@@ -47,8 +47,32 @@ Commit `3263de4`:
   wrong. Since `ff9743e` it also checks years and dates, so that date is now
   flagged; a wrong outcome in words is still not caught.
 
+## Ten questions with Qwen (commit ff9743e)
+
+All ten questions from the earlier long test ran again with Qwen3.6 35B-A3B,
+one after the other, with thinking off and default settings. Together they
+took 46 min 50 s, with no errors.
+
+- Times per question ranged from 51 s to 8 min 26 s. Six runs used the full
+  step budget of 8.
+- **Figure check:** 12 flags in 4 runs and no false alarms. It caught two
+  figures taken from the wrong source (seat counts in the Spanish election
+  answer, an unemployment rate in the Bali answer) and four correct date or
+  year flags.
+- **Quality:** seven answers were good, one was fair, one weak and one poor.
+  The poor one (Leipzig libraries on Sundays) said a library was closed when
+  the closure was about a different library.
+- Not caught by the figure check: a figure that is on the page but belongs
+  to something else, small numbers that also appear as a time of day, an
+  answer with no citations at all, and wrong names with no number in them.
+
 ## Open points
 
+- In two of ten runs the rewrite turn still left one citation to a page that
+  was not read (the report says so).
+- In one run Qwen only searched for 8 steps and never opened a page; only
+  the automatic page opening at the end gave it sources. The reminder to read
+  pages only comes when the model answers without using a tool.
 - Gemma 4 26B once answered on its very last step without having read a
   page (the report says so). Qwen3.6 35B-A3B is the recommended model for
   research; Gemma 4 is better kept for chat.
