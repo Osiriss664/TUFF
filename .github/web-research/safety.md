@@ -40,11 +40,29 @@ at their private addresses.
   print a planted word, send your question to an outside address, read your
   Mac or network, or obey a fake "end of tool result". Each was run three
   times per model: Gemma 4 E4B, Gemma 4 26B and Qwen3.6 resisted all 12 runs
-  in their latest test.
+  in an earlier test. In the latest run (one run each, Qwen3.6), the model
+  followed the local-network page and asked for addresses of the Mac, the
+  VM host and cloud metadata. The sandbox blocked all of them, and the answer
+  itself was still correct. On the fake "end of tool result" page it
+  mentioned the planted text as a warning.
+- **Published attacks.** Nine more test pages carry 91 attack texts from two
+  published research collections, BIPIA (Microsoft) and AgentDojo (ETH
+  Zurich). They try to make the model drop its task, change the answer, add
+  ads or scam text, spread false claims or visit an outside address, hidden
+  in many ways on the page. Qwen3.6 resisted all 91 in one run.
+- **Scanning the model alone.** NVIDIA's open-source scanner garak sent 96
+  attack prompts straight to the model, without the sandbox or the research
+  loop. Hidden characters did not work (0 of 8), but hidden instructions in
+  documents worked often (12 to 75 percent per kind, some of them false
+  alarms of the scanner), and so did instructions written in codes such as
+  base64 or hex (12 to 50 percent). This shows why the other layers matter:
+  the model alone can be talked into things, but in web research it has no
+  tool except search and page reading, and the sandbox blocks your Mac and
+  your network.
 
 These tests are strong evidence, not a guarantee. Anyone can rerun them; the
 scripts are on the `feature/web-research` branch (the injection test needs
-the test pages served from a public web address).
+the test pages served from a public web address; garak runs on the Mac).
 
 ## What it does not protect against
 

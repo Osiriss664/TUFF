@@ -79,9 +79,10 @@ has nothing on your Mac it could use to follow them. See [Safety](safety.md).
    goes for years and dates (in German and English forms). It also lists a
    figure that is on the page but not next to anything the sentence names,
    and names (such as product or group names) that the cited pages do not
-   mention. This is only a hint: it cannot catch every wrong word, sentences
-   without source numbers are only checked for names, and a page may write a
-   figure in words or in another unit.
+   mention, and short labels such as "M1" or "F-35". Sentences without a
+   source number are checked against all pages read, for names, full dates
+   and longer numbers. This is only a hint: it cannot catch every wrong word,
+   and a page may write a figure in words or in another unit.
 
 The number of steps is limited (8 by default, up to 100). When the budget is
 used up, the model has to answer with what it has. The number of pages to
@@ -104,7 +105,11 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Spends two steps in a row only repeating searches or page reads it already did | Stops the research there and asks for the answer, so no steps are wasted. The report notes the early stop. |
 | Answers after only one search or one page | Asks it once to look wider: other words, another language, another source. |
 | Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
+| Stops in the middle of the answer because it reached its length limit | Asks it once to continue exactly where it stopped. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
+| Gives figures without source numbers, or no source numbers at all | Asks it once to add the source number after every claim taken from a page. |
+| Answers in another language than the question asked for | Asks it once to write the whole answer in the right language. |
+| Tries to search again when it should only write the answer | Tells it the tools are closed and asks again; only then are the tools switched off. |
 | Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
 | Thinks for more than 3 minutes on one step | Stops that step and asks again with its "thinking" turned off, for the rest of the question. |
 | Fails with a server error while thinking | Asks again with its "thinking" turned off instead of giving up. |
@@ -112,8 +117,10 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Takes too long on one step, or ends without an answer | Asks again with its "thinking" turned off. |
 | Takes too long on one step with "thinking" already off | Shortens older results and asks once more. |
 
-If a problem remains, the report says so in a note at the end, for example
-that only one search was run or that a citation matches no page read.
+The last three requests go out together as one request, so they cost at most
+one extra model turn. If a problem remains, the report says so in a note at
+the end, for example that only one search was run, that a citation matches
+no page read, or that the answer is not in the question's language.
 
 If a run fails or is stopped after it already searched or read a page, you
 still get a report. It has no answer, says that the research ended early and
