@@ -109,7 +109,7 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Gives figures without source numbers, or no source numbers at all | Asks it once to add the source number after every claim taken from a page. |
 | Answers in another language than the question asked for | Asks it once to write the whole answer in the right language. |
-| Tries to search again when it should only write the answer | Tells it the tools are closed and asks again; only then are the tools switched off. |
+| Tries to search again when it should only write the answer | Tells it the tools are closed and asks again. If it tries again, asks plainly for the best answer from the pages it read. Only then are the tools switched off. |
 | Runs out of room while thinking, before it answers | Keeps researching with its "thinking" turned off. |
 | Thinks for more than 3 minutes on one step | Stops that step and asks again with its "thinking" turned off, for the rest of the question. |
 | Fails with a server error while thinking | Asks again with its "thinking" turned off instead of giving up. |

@@ -5,7 +5,7 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `8482548` at the time of writing, on top of TUFF 7.3.0,
+branch (commit `3a36f1d` at the time of writing, on top of TUFF 7.3.0,
 tested on a Mac). File paths are relative to
 that branch.
 
@@ -122,16 +122,32 @@ progress shows `tool error: open_page needs an http or https url: …`.
 retry after an empty answer, the continuation and the revision) with the
 tools still in the prompt and `tool_choice: "auto"`. With `"none"`, TUFF's
 server leaves the tools out of the rendered prompt and misses its prompt
-cache ("tool set changed"). A reply with tool calls is never used: the calls
-are not run and its text is dropped. For one more request, a user note
-(`toolsClosedNote`: "The tools are closed now; do not call web_search or
-open_page again. Reply with text only, as asked above.") is added and the
-request is sent with `"auto"` and reasoning off; the note is removed again
-afterwards. Only if that reply also has tool calls is the request sent with
-`"none"`. The note step was added after Qwen, asked with `"none"` at once,
-started a tool call anyway and TUFF answered with HTTP 500 `unknown_tool`.
-On a Mac, the final requests of three runs reused 9,141 of 10,427, 9,515 of
-10,532 and 4,029 of 4,095 prompt tokens from the cache.
+cache ("tool set changed"). A reply with tool calls is never used, and its
+calls are not run, but the turn stays in the conversation exactly as the
+step loop renders it, and each call gets a tool result (`toolsClosedNote`:
+"Not run: the tools are closed now. Reply with text only, as asked above.").
+The request is then sent again with `"auto"` and reasoning off, and the
+progress shows `answerHadToolCalls`. A second reply with tool calls is
+closed the same way and followed by a user message (`noMoreToolsRequest`:
+write the best answer from the pages read, in plain text, and say what could
+not be verified). Only a third one leads to a request with `"none"`. When the
+server refuses that (HTTP 500 `structured_output_failure`; Qwen started a
+tool call even then), it is not sent again: during the final answer the run
+ends with a partial report, during a continuation or revision the earlier
+answer is kept.
+
+Nothing is removed afterwards, and from the first request for the answer on
+(`State.sealedFrom`), routine compaction no longer shortens the prompt; only
+a context overflow or a timeout retry still does. So every later request
+extends what the server cached. The server keeps a cached tool-call turn
+only when the reply had no text before its calls, and the request after the
+user message and the `"none"` request still miss once.
+
+On a Mac (commit `3a36f1d`), Bali needed two closed rounds and the user
+message, and its final requests reused 6,526 of 7,900, 7,941 of 7,977 and
+8,018 of 8,092 prompt tokens, the citation revision 9,647 of 9,710 (before:
+0 of 8,019). The heat-pump continuation reused 12,866 of 12,909 (before: 0 of
+9,166, after the prompt had been shortened right before it).
 
 ## Safeguards in the loop
 
@@ -151,7 +167,7 @@ can happen in every step). Defaults are shown; most can be changed (see
 | `refusedStepsBeforeAnswering` (2) steps in a row in which every executed tool call was a refused repeat (search or page open), not on the last step | Stop the step loop and go to the final answer (`repeatedSearchesStopRequest`), with the top-up below. A step with any new search or page read, or the in-loop auto-open above, resets the count. The progress reads "only repeated searches or pages; stopping and asking for the answer". Always on. The report gets `stoppedRepeatedSearches` (not `budgetExhausted`). | `stoppingRepeatedSearches` |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
 | Step budget used up, or stopped for repeated searches, with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
-| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain. Also: a full date, or a number with at least 3 significant digits, found on a cited page but with none of the sentence's name words (capitalized words not first in the sentence or after `:`/`|`, minus stop words, months, weekdays, units and currency codes) within 300 characters of any occurrence there; and name phrases missing from the cited pages (strong: a word with an inner capital, or an all-caps or inner-capital word followed by a number, not a year; weak: two or more capitalized words, linking words such as `der`/`of` allowed, checked only when the answer and a cited page are in the same language by a function-word count). Sentences without citations are checked against all pages read, for strong names, full dates other than today's and numbers with at least 3 significant digits ("not on any page read"); a sentence under a "not verified" line (`nicht verifiziert`, `unclear` and similar, up to the next heading) is skipped. A short label of 1 to 4 letters and 1 to 4 digits starting with a capital (`M1`, `H100`, `F35`, a range `M1-M4` by both ends) counts as a name and must be on a page as a whole word, also written `F-35` or `F 35`; labels after a number and formula or unit labels (`CO2`, `PM10`) are skipped. Headings and source-list lines are skipped. Names match as a substring of a page word after simple stemming; page and answer are Unicode-normalized | The report gets a "Figure check" section with up to three lists (not on the cited pages; on a page but not near what the sentence names; names not found), 20 points in all; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: lowercase names, months and years in uncited sentences are not checked, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
+| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain. Also: a full date, or a number with at least 3 significant digits, found on a cited page but with none of the sentence's name words (capitalized words not first in the sentence or after `:`/`|`, minus stop words, months, weekdays, units and currency codes) within 300 characters of any occurrence there; and name phrases missing from the cited pages (strong: a word with an inner capital, or an all-caps or inner-capital word followed by a number, not a year; weak: two or more capitalized words, linking words such as `der`/`of` allowed but `und`/`oder`/`and`/`or` ending the phrase, one word of it allowed to match a page word with the same first letters (at least 5 letters and 60 % of the shorter word, such as `Technologie` for `Technik`) that stands within 30 characters of the phrase's other words, checked only when the answer and a cited page are in the same language by a function-word count). Sentences without citations are checked against all pages read, for strong names, full dates other than today's and numbers with at least 3 significant digits ("not on any page read"); a sentence under a "not verified" line (`nicht verifiziert`, `unclear` and similar, up to the next heading) is skipped. A short label of 1 to 4 letters and 1 to 4 digits starting with a capital (`M1`, `H100`, `F35`, a range `M1-M4` by both ends) counts as a name and must be on a page as a whole word, also written `F-35` or `F 35`; labels after a number and formula or unit labels (`CO2`, `PM10`) are skipped. Headings and source-list lines are skipped. Names match as a substring of a page word after simple stemming; page and answer are Unicode-normalized | The report gets a "Figure check" section with up to three lists (not on the cited pages; on a page but not near what the sentence names; names not found), 20 points in all; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: lowercase names, months and years in uncited sentences are not checked, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
 | Answer stopped at the token limit (`finish_reason: length`), run not stopped | Give the cut-off text back once as the assistant's message, reasoning off, asking to continue exactly where it stopped in the same language and format; the continuation is joined directly (a line break only before a list or heading marker that starts mid-line). Counts as cut off only if the continuation also stops at the limit; an empty or failed continuation keeps the cut-off text. A continued answer is not revised afterwards. | `continuingCutOffAnswer` |
 | Answer (not cut off) cites numbers that match no read source (at least one source read); or pages were read but at least 2 sentences have a figure (number, date, month and year) and no citation, or the answer has no citation at all and at least 3 sentences; or the question asks for German or English (with a request word such as `Antworte auf Deutsch`, or clearly by its own question words) and the answer is in the other | One combined request, reasoning off, listing every problem that applies: rewrite from read pages only, add `[n]` after claims taken from pages, write the whole answer in the asked language. Kept only if complete, at least a third as long, citing no new unread number (and fewer, if that was a problem); with missing citations it must cite something and have fewer uncited-figure sentences; with the wrong language it must keep every citation and not be in the other language. Otherwise the original stays. An answer still in the wrong language gets a report note (`answerLanguageMismatch`), also with `--rewrite off`. | `revisingUnreadCitations`, `askingForCitations`, `askingForAnswerLanguage` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
@@ -236,8 +252,8 @@ with the same API (for example Ollama) works.
   prompt (see [Asking for the answer](#asking-for-the-answer)), so it hits
   the cache too (on a Mac, 9,141 of 10,427 tokens). Remaining cache misses:
   after a turn with two tool calls, when reasoning switches from on to off,
-  and at the final request after the steps ran out and top-up pages were
-  opened (the server logs "history did not extend"; cause not found yet).
+  and the closed-tools cases named under
+  [Asking for the answer](#asking-for-the-answer).
 - Timeout for model calls: `--step-timeout` minutes (default 30) per HTTP
   request; sandbox calls keep 1,800 s. Both are set in
   `URLSessionResearchTransport`. Replies are not streamed, so this is in
@@ -440,6 +456,8 @@ CLI (`tuff research <question> [options]`):
 | `--rewrite on\|off` | on | One revision when the answer cites pages that were never read, leaves figures without a source number, or is in the wrong language. |
 | `--step-timeout <1…60>` | 30 | Minutes one model step may take before it is retried without reasoning. |
 | `--thinking-limit <1…60>` | 3 | Minutes a step with reasoning on may take before it is cancelled and retried without reasoning, which stays off for the run. |
+| `--save-pages <file.json>` | | Test aid: also write the answer and the full text of every page read to a new JSON file. |
+| `--replay-figures <file.json>` | | Test aid: run the figure check on a saved file, without server or sandbox. |
 | `--quiet` | off | No progress on stderr. |
 | `--help`, `-h` | | Print the options. |
 | `--` | | End of options; the rest is the question. |
@@ -478,7 +496,7 @@ Scripts/garak/run_garak.sh                                # model alone, Mac onl
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (127 tests), covering tool handling,
+  model replies and a fake sandbox (142 tests), covering tool handling,
   nudges, fallbacks, the repeated-search stop, repeated page refusal, the
   figure check, partial reports, the thinking limit and the
   retry after a model error, compaction, the continuation and revision,

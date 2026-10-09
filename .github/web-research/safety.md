@@ -15,7 +15,7 @@ at their private addresses.
 
 | Layer | What it does, in plain words |
 | --- | --- |
-| **Only two tools** | The model can search and read pages. It has no way to run programs, open files or write anything. The only file written is the finished report, and never over an existing file. |
+| **Only two tools** | The model can search and read pages. It has no way to run programs, open files or write anything. The only file written is the finished report (and, only with a test option you choose, a copy of the pages read), never over an existing file. |
 | **A separate VM for the web** | Searching and page reading happen in a throwaway virtual machine made with Apple's [container](https://github.com/apple/container). It has its own memory and files, sees none of your Mac's folders, and is replaced by a fresh one every time it starts. |
 | **A firewall inside the VM** | The VM may only reach public internet addresses, plus your Mac's name lookup service (DNS, port 53 only). The addresses of your home network (router, printers, network drives), the Mac's address as the VM sees it, and cloud metadata addresses are blocked. The firewall works by address range, not by device, so a device with its own public internet address is not covered. If you set up your own SearXNG search server, that one address is allowed too. The firewall loads before the web service starts, and the sandbox refuses to start if it cannot be loaded. |
 | **No admin rights** | The web service in the VM runs as an ordinary user with no special Linux rights, so it cannot switch the firewall off. |

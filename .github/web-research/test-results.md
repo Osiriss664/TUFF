@@ -4,7 +4,7 @@ How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
 The five-question comparison was run on 5 October 2026 with the code at commit
 `4a94397`; the automated tests and the checks of the newest changes were run
-on 6 to 8 October 2026 with commits from `3263de4` to `6effb41`, all on the `feature/web-research`
+on 6 to 9 October 2026 with commits from `3263de4` to `3a36f1d`, all on the `feature/web-research`
 branch.
 
 [Back to the front page](../README.md) ·
@@ -13,6 +13,9 @@ branch.
 [Technical reference](technical.md)
 
 ## Automated tests
+
+Commit `3a36f1d`: research loop tests 142 of 142 and research app tests
+45 of 45 passed.
 
 Commit `6effb41`: research loop tests 127 of 127 and research app tests
 45 of 45 passed.
@@ -31,6 +34,32 @@ Commit `3263de4`:
   connection-limit test.
 - Full test suite: only the 4 known failures that were already there before.
 - Sandbox: 40 Python tests and the self-test passed.
+
+## Prompt cache at the end of a run (commits 7137b14 and 3a36f1d)
+
+Bali, the heat pump and the Spanish election ran again with Qwen3.6
+35B-A3B, thinking off and default settings, after the end of a run was
+changed so the server can reuse its prompt cache there too.
+
+- **Bali** (`3a36f1d`, 5 min 58 s): the model tried to search twice when only
+  the answer was wanted. It was told the tools are closed, then asked plainly
+  for the answer, and then wrote it in German. The final requests reused
+  between 83 and 99 percent of the prompt from the cache (before: nothing).
+  On `7137b14` the same question still ended with an error, which the plain
+  request fixed.
+- **Heat pump** (`3a36f1d`, 4 min 47 s): the answer was cut off and continued;
+  the continuation reused 12,866 of 12,909 tokens (before: nothing).
+- **Figure check:** 9 of 13 flags right, including a real one (monthly Bali
+  arrivals cited to a news page that does not have them). Four false alarms:
+  a month and a name that are only in a page's title or address, an HTTP
+  error code (403) taken as a figure, and "Nutzung von WP" taken as a name.
+- **Testing two new rules** on the saved pages: a rule that ties figures more
+  strictly to names gave two new flags, both false alarms, so it was dropped.
+  A rule that accepts a similar word ("Technik" for "Technologie") is now on,
+  and phrases joined by "und" or "oder" no longer count as names.
+- **Spanish election** (`7137b14`): the answer searched only 2023 and 2024
+  and presented the 2023 election as the current one; earlier runs found the
+  vote of 29 November 2026. The figure check cannot see this.
 
 ## Answer fixes and attack tests (commits 8475834 and 6effb41)
 
@@ -129,14 +158,17 @@ took 46 min 50 s, with no errors.
   passages of a page that match the question could make answers better and a
   little faster. The baseline from earlier logs: page text is about 16 percent
   of the run time, writing about 65 percent. Not built yet.
-- The prompt cache still misses at the final request when the steps were
-  used up and pages were opened at the end (Bali run on `6effb41`: 0 of 8,019
-  tokens, and 0 of 9,602 for the request for source numbers after it; the
-  server logs "history did not extend"). It also misses after a turn with two
-  tool calls and when thinking is switched off during a run.
-- The figure check takes a different word for the same thing as a missing
-  name ("Technologie" for "Technik"), and does not notice a figure that is on
-  the page but belongs to something else (a seat count of 143).
+- The prompt cache still misses after a turn with two tool calls, when
+  thinking is switched off during a run, and once when the model keeps
+  trying to search at the end.
+- The figure check does not notice a figure that is on the page but belongs
+  to something else (a seat count of 143); a stricter rule for this gave only
+  false alarms. It also flags months and names that are only in a page's
+  title or address, error codes such as 403, and phrases such as "Nutzung
+  von WP" as names. Accepting similar words could let a near-miss such as
+  "Bundesrat" for "Bundestag" through.
+- A run can miss the newest events: one Spanish election answer searched only
+  older years and presented an old election as the current one.
 - Lowercase names are not checked by the figure check.
 - Figures in sentences without a source number are only checked if they are
   full dates or have three or more digits; months, years and short numbers
