@@ -867,7 +867,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                             _ error: OpenAIErrorEnvelope,
                             closeAfter: Bool = false) {
         if errorAPI == .messages {
-            let object: [String: Any] = ["type": "error", "error": ["type": status.code >= 500 ? "api_error" : error.error.type, "message": error.error.message]]
+            // The Messages API names a refused caller `permission_error`.
+            let type = status.code >= 500 ? "api_error"
+                : error.error.code == "forbidden_host" ? "permission_error" : error.error.type
+            let object: [String: Any] = ["type": "error", "error": ["type": type, "message": error.error.message]]
             guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
             writeData(context, status: status, data: data, closeAfter: closeAfter)
         } else {

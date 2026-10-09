@@ -144,9 +144,14 @@ struct ServerHostCheckTests {
                                              headers: headers + extra)
                 #expect(response.hasPrefix("HTTP/1.1 403"), "\(headers) \(path)")
                 // The Messages API error carries no code, only the message.
-                #expect(response.contains(path == "/v1/messages"
-                    ? "only answers requests addressed to" : "forbidden_host"),
-                        "\(headers) \(path)")
+                if path == "/v1/messages" {
+                    #expect(response.contains("only answers requests addressed to"),
+                            "\(headers) \(path)")
+                    #expect(response.contains(#""type":"permission_error""#),
+                            "\(headers) \(path)")
+                } else {
+                    #expect(response.contains("forbidden_host"), "\(headers) \(path)")
+                }
                 #expect(!response.contains("test-model"), "\(headers) \(path)")
             }
         }

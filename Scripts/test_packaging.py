@@ -28,8 +28,10 @@ def check(app):
     for name in ['TUFFCLI', 'TUFFServer']:
         usage = subprocess.check_output([str(app / 'Contents/Resources/bin' / name), '--help'], text=True)
         assert f'usage: {name}' in usage, name
-    for name in ['tuff', 'TUFFRepack']:
+    for name in ['tuff', 'TUFFRepack', 'TUFFResearch']:
         assert not (app / 'Contents/Resources/bin' / name).is_symlink(), name
+    research = subprocess.check_output([str(app / 'Contents/Resources/bin/TUFFResearch'), '--help'], text=True)
+    assert 'usage: tuff research' in research
     agent = app / 'Contents/Library/LaunchAgents' / (info['CFBundleIdentifier'] + '.server.plist')
     job = plistlib.loads(agent.read_bytes())
     assert job['BundleProgram'] == 'Contents/Resources/bin/TUFFServer'
