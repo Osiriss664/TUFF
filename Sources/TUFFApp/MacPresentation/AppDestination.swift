@@ -2,6 +2,7 @@ public enum AppDestination: String, CaseIterable, Hashable, Identifiable, Sendab
     case chat
     case research
     case models
+    case benchmarks
     case server
     case settings
 
@@ -12,6 +13,7 @@ public enum AppDestination: String, CaseIterable, Hashable, Identifiable, Sendab
         case .chat: "Chat"
         case .research: "Research"
         case .models: "Models"
+        case .benchmarks: "Benchmarks"
         case .server: "Server"
         case .settings: "Settings"
         }
@@ -22,6 +24,7 @@ public enum AppDestination: String, CaseIterable, Hashable, Identifiable, Sendab
         case .chat: "bubble.left.and.bubble.right"
         case .research: "magnifyingglass"
         case .models: "shippingbox"
+        case .benchmarks: "gauge.with.dots.needle.67percent"
         case .server: "network"
         case .settings: "gearshape"
         }
@@ -32,8 +35,9 @@ public enum AppDestination: String, CaseIterable, Hashable, Identifiable, Sendab
         case .chat: "1"
         case .research: "2"
         case .models: "3"
-        case .server: "4"
-        case .settings: "5"
+        case .benchmarks: "4"
+        case .server: "5"
+        case .settings: "6"
         }
     }
 }

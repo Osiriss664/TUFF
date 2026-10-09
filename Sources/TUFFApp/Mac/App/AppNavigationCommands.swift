@@ -21,9 +21,7 @@ struct AppNavigationCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Navigate") {
-            ForEach(AppDestination.allCases) { destination in
-                destinationButton(destination)
-            }
+            ForEach(AppDestination.allCases) { destinationButton($0) }
         }
     }
 

@@ -186,6 +186,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// and dispatches exactly what it did before.
     private let smallBlockPrefill: SmallBlockPrefillPolicy
     private let smallBlockProjection: DequantInt4SmallBlock?
+    /// Lets ordinary MoE prefill overlap the shared expert with routed
+    /// preparation. Off by default; see `SharedExpertOverlapPolicy`.
+    private let sharedExpertOverlap: SharedExpertOverlapPolicy
+    /// Test-only view of each layer's routed MoE prefill phase. A throw from it
+    /// is treated like a failure at that step. Nil in production.
+    var routedPhaseObserver: ((PrefillRoutedPhaseStep) throws -> Void)?
     private let prefillQKVEpilogue: PrefillQKVEpilogue
     private let prefillAttention: PrefillAttention
     private let prefillPostAttention: PrefillPostAttentionSetup
@@ -362,20 +368,26 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private var rdadviseAdaptiveState: RDAdviceAdaptivePolicyState
     private var rdadviseAdaptivePosition: Int = -1
     private var rdadviseAdaptivePositionBytes: UInt64 = 0
-    /// The small-block prefill path follows `TUFF_SMALL_BLOCK_PREFILL`, read
-    /// once here; see `SmallBlockPrefillPolicy`.
+    /// The small-block prefill path follows `TUFF_SMALL_BLOCK_PREFILL` and the
+    /// shared-expert overlap follows `TUFF_SHARED_EXPERT_OVERLAP`, both read
+    /// once here; see `SmallBlockPrefillPolicy` and `SharedExpertOverlapPolicy`.
     public convenience init(model: Model, context: MetalContext, maxContext: Int,
                             runtimeConfiguration: RuntimeConfiguration = .production) throws {
+        let environment = ProcessInfo.processInfo.environment
         try self.init(model: model, context: context, maxContext: maxContext,
                       runtimeConfiguration: runtimeConfiguration,
                       smallBlockPrefill: SmallBlockPrefillPolicy(
-                        environment: ProcessInfo.processInfo.environment,
+                        environment: environment,
+                        variant: model.config.variant),
+                      sharedExpertOverlap: SharedExpertOverlapPolicy(
+                        environment: environment,
                         variant: model.config.variant))
     }
 
     init(model: Model, context: MetalContext, maxContext: Int,
          runtimeConfiguration: RuntimeConfiguration,
-         smallBlockPrefill: SmallBlockPrefillPolicy) throws {
+         smallBlockPrefill: SmallBlockPrefillPolicy,
+         sharedExpertOverlap: SharedExpertOverlapPolicy = .disabled) throws {
         let config = model.config
         if config.feedForwardKind == .mixtureOfExperts,
            let effectiveSlots = model.routedExpertCacheSlotCount(layer: 0),
@@ -384,6 +396,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 configured: effectiveSlots,
                 required: config.topKExperts)
         }
+        // Compile the kernel groups this architecture dispatches before any
+        // wrapper asks for a pipeline, so loading reads only what it needs.
+        try context.prepareKernelGroups(MetalKernelGroup.required(
+            for: model.config, sharedExpertWeightBits: model.sharedExpertWeightBits,
+            maxContext: maxContext))
         self.model = model
         self.ctx = context
         self.cfg = config
@@ -472,6 +489,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.prefillMPPAffine = MPPPrefillAffineQMM(context: context, bits: 4,
                                                     groupSize: int4Groups)
         self.smallBlockPrefill = smallBlockPrefill
+        self.sharedExpertOverlap = sharedExpertOverlap
         let smallBlockProjection = smallBlockPrefill.enabled
             ? try DequantInt4SmallBlock(context: context, groupSize: int4Groups)
             : nil
@@ -810,6 +828,80 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         }
         speculativeStartPosition = nil
         speculativeProcessedTokens = 0
+        resetTransientState()
+    }
+
+    // MARK: Retained conversation state
+
+    /// Layers whose state a snapshot carries. Layers that read another
+    /// layer's KV write none of their own and are skipped.
+    private func snapshotSkipsLayer(_ layer: Int) -> Bool {
+        cfg.layerSharesKV(layer)
+    }
+
+    private var sparseIndexerLayers: [Int] {
+        guard qwenSparseAttention != nil, let kv else { return [] }
+        return (0..<cfg.numLayers).filter { kv.layerKind($0) != .linear }
+    }
+
+    /// Everything carried from one token to the next: KV rows, Gated-DeltaNet
+    /// recurrent and convolution state, the sparse indexer's keys, the n-gram
+    /// convolution history, and the host-side n-gram context and multimodal
+    /// RoPE offset. Prefill chunk state, read-advice state and expert
+    /// prediction are per-request and rebuilt on resume.
+    private func snapshotBuilder(position: Int) throws -> RunnerStateSnapshotBuilder {
+        var builder = RunnerStateSnapshotBuilder()
+        kv?.addSnapshotRanges(to: &builder, position: position,
+                              skipLayer: snapshotSkipsLayer)
+        gdnState?.addSnapshotRanges(to: &builder)
+        if let qwenSparseAttention {
+            try qwenSparseAttention.addSnapshotRanges(
+                to: &builder, layers: sparseIndexerLayers, position: position)
+        }
+        if let pleConvHistory {
+            builder.add("ngram.conv", pleConvHistory, length: pleConvHistory.length)
+        }
+        return builder
+    }
+
+    // Accessors the snapshot extension needs; the state itself stays private.
+    var speculativeTransactionIsIdle: Bool { speculativeStartPosition == nil }
+    var commandQueueForSnapshots: MTLCommandQueue { ctx.queue }
+    var ngramContextForSnapshot: [Int32] { ngramContext }
+    var ropeDeltaForSnapshot: Int32 { qwenMultimodalRopeDelta }
+    func snapshotSkipsLayerForEstimate(_ layer: Int) -> Bool { snapshotSkipsLayer(layer) }
+    var gdnStateSnapshotBytes: Int { gdnState?.snapshotBytes ?? 0 }
+    var ngramHistorySnapshotBytes: Int {
+        pleConvHistory.map { RunnerStateSnapshotBuilder.aligned($0.length) } ?? 0
+    }
+    func sparseIndexerSnapshotBytes(position: Int) -> Int {
+        qwenSparseAttention?.snapshotBytes(layers: sparseIndexerLayers.count,
+                                           position: position) ?? 0
+    }
+    func snapshotBuilderForCapture(position: Int) throws -> RunnerStateSnapshotBuilder {
+        try snapshotBuilder(position: position)
+    }
+
+    /// Writes a snapshot into a runner that has just been reset.
+    func applySnapshot(_ snapshot: RunnerStateSnapshot) throws {
+        let position = snapshot.host.position
+        if let kv {
+            guard position <= kv.maxContext else {
+                throw RunnerStateSnapshotError.layoutMismatch("position exceeds context")
+            }
+            if position > 0 { try kv.ensureCapacity(through: position, on: ctx.queue) }
+        } else if position != 0 {
+            throw RunnerStateSnapshotError.layoutMismatch("runner has no KV cache")
+        }
+        if ngramRows != nil {
+            guard snapshot.host.ngramContext.count == ngramContext.count else {
+                throw RunnerStateSnapshotError.layoutMismatch("n-gram context length")
+            }
+        }
+        try snapshotBuilder(position: position).restore(snapshot, queue: ctx.queue)
+        kv?.restorePosition(position)
+        if ngramRows != nil { ngramContext = snapshot.host.ngramContext }
+        qwenMultimodalRopeDelta = snapshot.host.ropeDelta
         resetTransientState()
     }
 
@@ -2456,6 +2548,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         tileExpertCount: routeTileExpertCount,
                         expertSortKeys: model.routedExpertPhysicalOffsets(layer: L))
 
+                    // With the overlap off the shared expert finishes before any
+                    // routed preparation, as it always has. With it on, the
+                    // shared buffer runs while the metadata is built and the
+                    // first tile is fetched, and is joined just before the first
+                    // routed dispatch. Speculative verification never overlaps.
+                    let overlapSharedExpert = sharedExpertOverlap.admits(
+                        speculativeVerification: isSpeculativeVerification)
                     guard let sharedCB = makePrefillCommandBuffer(
                         "prefill start=\(startPosition) count=\(tokens.count) layer=\(L) phase=shared_expert") else {
                         throw ModelError.residentBufferWrapFailed
@@ -2522,19 +2621,36 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     }
                     }
                     sharedCB.commit()
-                    try waitForCompletion(sharedCB)
 
-                    let metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(
-                        device: ctx.device,
-                        routes: routes)
-                    let routedOffsets = model.routedExpertOffsets(layer: L)
                     struct PendingPrefillTile {
                         let tileIndex: Int
                         let commandBuffer: MTLCommandBuffer
                         let fetch: PrefillStreamedTileFetchResult
                         let argumentBuffer: PrefillStreamedTileArgumentBuffer
                     }
+                    // Everything below that has been committed and not yet
+                    // joined. Any failure joins all of it before the error
+                    // leaves this layer.
+                    var sharedInFlight: MTLCommandBuffer? = sharedCB
                     var pendingTiles: [PendingPrefillTile] = []
+                    let metadata: PrefillGroupedRoutedMoEStreamedMetadataBuffers
+                    do {
+                    try routedPhaseObserver?(.sharedSubmitted(layer: L))
+                    func joinSharedExpert() throws {
+                        guard let shared = sharedInFlight else { return }
+                        sharedInFlight = nil
+                        try waitForCompletion(shared)
+                        try routedPhaseObserver?(.sharedJoined(layer: L))
+                    }
+                    if !overlapSharedExpert {
+                        try joinSharedExpert()
+                    }
+
+                    metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(
+                        device: ctx.device,
+                        routes: routes)
+                    try routedPhaseObserver?(.metadataPrepared(layer: L))
+                    let routedOffsets = model.routedExpertOffsets(layer: L)
                     var tileLifetime = PrefillStreamedTileSlotLifetime()
                     func drainOldestPendingTile() throws {
                         guard !pendingTiles.isEmpty else { return }
@@ -2542,6 +2658,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         try withExtendedLifetime((pending.fetch, pending.argumentBuffer)) {
                             try waitForCompletion(pending.commandBuffer)
                         }
+                        try routedPhaseObserver?(.tileJoined(layer: L, tile: pending.tileIndex))
                         if !pending.fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.complete(tileIndex: pending.tileIndex)
                         }
@@ -2609,6 +2726,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                     detail: "routed tile scheduler requested pending action without pending tile")
                             }
                         }
+                        try Task.checkCancellation()
+                        try routedPhaseObserver?(.fetchStarting(layer: L, tile: tileIndex))
                         let fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
                             model: model,
                             layer: L,
@@ -2616,10 +2735,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             routes: routes,
                             plannedFetch: plannedFetch,
                             avoidingSlots: Set(pendingTiles.flatMap(\.fetch.plannedAssignedSlots)))
+                        try Task.checkCancellation()
                         recordSpeculativeFetch(layer: L, fetch: fetch)
                         try fetch.binding.validateCoversPairs(routes.sortedPairs,
                                                               pairStart: Int(tile.pairStart),
                                                               pairCount: Int(tile.pairCount))
+                        try routedPhaseObserver?(.tileBound(layer: L, tile: tileIndex))
                         if !fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.begin(tileIndex: tileIndex,
                                                    plannedSlots: fetch.plannedMissSlots)
@@ -2659,7 +2780,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                 scratch: batchedScratch,
                                 d: D, f: cfg.moeIntermediateSize, topK: cfg.topKExperts)
                         } else {
-                        _ = prefillGroupedMoE.encodeStreamedBatched(
+                        try prefillGroupedMoE.encodeStreamedBatched(
                             commandBuffer: tileCB,
                             hidden: ffnInput,
                             sortedPairs: metadata.sortedPairs,
@@ -2671,17 +2792,44 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             params: streamedParams,
                             pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
                         }
+                        // The shared expert must have finished without error
+                        // before any routed work reaches the GPU.
+                        try Task.checkCancellation()
+                        try joinSharedExpert()
                         tileCB.commit()
                         pendingTiles.append(PendingPrefillTile(tileIndex: tileIndex,
                                                                commandBuffer: tileCB,
                                                                fetch: fetch,
                                                                argumentBuffer: argumentBuffer))
+                        try routedPhaseObserver?(.tileDispatched(layer: L, tile: tileIndex))
                         while pendingTiles.count > schedulerConfig.maxPendingDepth {
                             try drainOldestPendingTile()
                         }
                     }
+                    // A layer with no routed tiles still joins the shared expert.
+                    try joinSharedExpert()
                     while !pendingTiles.isEmpty {
                         try drainOldestPendingTile()
+                    }
+                    } catch {
+                        // Join every buffer still submitted, retaining what it
+                        // reads, before the original error leaves this layer.
+                        var joins: [() throws -> Void] = []
+                        if let shared = sharedInFlight {
+                            joins.append { [self] in try waitForCompletion(shared) }
+                        }
+                        for pending in pendingTiles {
+                            joins.append { [self] in
+                                try withExtendedLifetime((pending.fetch, pending.argumentBuffer)) {
+                                    try waitForCompletion(pending.commandBuffer)
+                                }
+                            }
+                        }
+                        sharedInFlight = nil
+                        pendingTiles.removeAll()
+                        PrefillSubmittedWorkDrain.joinAll(joins)
+                        try? routedPhaseObserver?(.drainedAfterFailure(layer: L, buffers: joins.count))
+                        throw error
                     }
                     guard let tailCB = makePrefillCommandBuffer(
                         "prefill start=\(startPosition) count=\(tokens.count) layer=\(L) phase=routed_tail") else {
@@ -4457,5 +4605,41 @@ extension RealForwardRunner {
             }
         }
         return report
+    }
+}
+
+extension RealForwardRunner: StateSnapshottingRunner {
+    public var stateSnapshotByteEstimate: Int? {
+        guard speculativeTransactionIsIdle else { return nil }
+        let position = continuationPosition
+        var total = kv?.snapshotBytes(position: position, skipLayer: snapshotSkipsLayerForEstimate) ?? 0
+        total += gdnStateSnapshotBytes
+        total += sparseIndexerSnapshotBytes(position: position)
+        total += ngramHistorySnapshotBytes
+        return total
+    }
+
+    public func captureState() throws -> RunnerStateSnapshot {
+        guard speculativeTransactionIsIdle else {
+            throw RunnerStateSnapshotError.unsupported("a speculative verification is in progress")
+        }
+        let position = continuationPosition
+        return try snapshotBuilderForCapture(position: position).capture(
+            owner: self, queue: commandQueueForSnapshots,
+            host: .init(position: position, ngramContext: ngramContextForSnapshot,
+                        ropeDelta: ropeDeltaForSnapshot))
+    }
+
+    public func restoreState(_ snapshot: RunnerStateSnapshot) throws {
+        guard snapshot.owner == ObjectIdentifier(self) else {
+            throw RunnerStateSnapshotError.foreignSnapshot
+        }
+        reset()
+        do {
+            try applySnapshot(snapshot)
+        } catch {
+            reset()
+            throw error
+        }
     }
 }

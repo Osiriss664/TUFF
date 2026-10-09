@@ -169,6 +169,7 @@ struct PromptComposerView: View {
             // Model and reasoning belong with the prompt they apply to, rather
             // than in a separate strip above the composer.
             ChatControlsView(model: model)
+            ToolToggleControls(model: model)
             Spacer(minLength: 8)
             contextMeter
             clearAction
@@ -214,14 +215,10 @@ struct PromptComposerView: View {
                     + "its image support is downloaded, in Models.")
             }
         } label: {
-            Image(systemName: "plus")
-                .appFont(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-                .background(attachButtonBackground)
+            ComposerIcon(systemImage: "plus", isOn: false)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(model.isRunning || !(canAddImages || canAddDocuments))
@@ -254,12 +251,6 @@ struct PromptComposerView: View {
             .accessibilityLabel("Context used")
             .accessibilityValue("about \(usage.estimatedTokens) of \(usage.maxTokens) tokens")
         }
-    }
-
-    private var attachButtonBackground: some View {
-        Circle()
-            .fill(Color.primary.opacity(0.06))
-            .overlay { Circle().stroke(Color.primary.opacity(0.08), lineWidth: 0.5) }
     }
 
     private var canAddImages: Bool {

@@ -103,6 +103,8 @@ struct ServerHostCheckTests {
 
     private static let routes = [
         ("POST", "/v1/chat/completions", [String]()),
+        ("POST", "/v1/messages", []),
+        ("POST", "/v1/responses", []),
         ("GET", "/v1/models", []),
         ("GET", "/health", []),
         ("GET", ServerControl.statusPath, []),
@@ -141,7 +143,10 @@ struct ServerHostCheckTests {
                 let response = try Self.send(port: port, method: method, path: path,
                                              headers: headers + extra)
                 #expect(response.hasPrefix("HTTP/1.1 403"), "\(headers) \(path)")
-                #expect(response.contains("forbidden_host"), "\(headers) \(path)")
+                // The Messages API error carries no code, only the message.
+                #expect(response.contains(path == "/v1/messages"
+                    ? "only answers requests addressed to" : "forbidden_host"),
+                        "\(headers) \(path)")
                 #expect(!response.contains("test-model"), "\(headers) \(path)")
             }
         }

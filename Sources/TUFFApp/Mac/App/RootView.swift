@@ -36,6 +36,7 @@ struct RootView: View {
     let research: ResearchWorkspace
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var navigation = AppNavigationState()
+    @State private var benchmarks = BenchmarkController()
     @State private var renameTarget: AppConversationRecord?
     @State private var renameText = ""
     @State private var isFullScreen = false
@@ -134,7 +135,8 @@ struct RootView: View {
             model: model,
             backgroundAPI: backgroundAPI,
             updateController: updateController,
-            research: research)
+            research: research,
+            benchmarks: benchmarks)
     }
 
     private var sidebar: some View {
@@ -151,11 +153,16 @@ struct RootView: View {
                             Label(item.title, systemImage: item.systemImage)
                                 .appFont(.body)
                             Spacer(minLength: 0)
+                            if item == .benchmarks, benchmarks.isRunning {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .accessibilityLabel("Benchmark running")
+                            }
                         }
                         .contentShape(Rectangle())
                     }
                         .buttonStyle(.plain)
-                        .listRowBackground(destinationRowBackground(for: item))
+                        .listRowBackground(SidebarSelection(isSelected: navigation.destination == item))
                         .foregroundStyle(navigation.destination == item
                                          ? TUFFMacTheme.accentColor
                                          : .primary)
@@ -171,16 +178,6 @@ struct RootView: View {
             // check a download made every conversation disappear, and coming
             // back was a two-step trip.
             Section {
-                Button {
-                    navigation.select(.chat)
-                    model.clearOutput()
-                } label: {
-                    Label("New Chat", systemImage: "square.and.pencil")
-                        .appFont(.body)
-                }
-                .disabled(!canStartNewChat)
-            }
-            Section("Chats") {
                 if model.conversationStore.conversations.isEmpty {
                     Text("No saved chats")
                         .appFont(.caption)
@@ -190,6 +187,8 @@ struct RootView: View {
                         conversationRow(conversation)
                     }
                 }
+            } header: {
+                chatsHeader
             }
             if !research.reports.reports.isEmpty {
                 Section("Research Reports") {
@@ -204,31 +203,43 @@ struct RootView: View {
         // In full screen the content stays inside its safe area, but the
         // sidebar surface itself extends through the top, bottom, and leading
         // safe areas so it becomes a conventional full-height side column.
-        .scrollContentBackground(isFullScreen ? .hidden : .automatic)
-        .background {
-            if isFullScreen {
-                Rectangle()
-                    .fill(TUFFMacTheme.surfaceStyle(
-                        reduceTransparency: reduceTransparency,
-                        material: .regular))
-                    .ignoresSafeArea(.container, edges: [.top, .bottom, .leading])
-            } else if !reduceTransparency {
-                // The floating glass sidebar only refracts the window behind
-                // it, which is opaque, so on its own it reads as a solid panel.
-                // A behind-window blur lets the desktop show through it.
-                BehindWindowBlur()
-                    .ignoresSafeArea()
-            }
-        }
+        .scrollContentBackground(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) { brandHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { selectedModelFooter }
+        // Behind the header and footer as well as the list. Painted under the
+        // list alone, the header and footer showed the translucent sidebar
+        // material instead, as two lighter bands. A stable surface also keeps
+        // bright wallpaper from washing out the sidebar, follows light and
+        // dark appearance, and works with Reduce Transparency.
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea(
+                    .container,
+                    edges: isFullScreen ? [.top, .bottom, .leading] : [.top])
+        }
         .navigationTitle("TUFF")
     }
 
-    private func destinationRowBackground(for item: AppDestination) -> Color {
-        navigation.destination == item
-            ? TUFFMacTheme.accentColor.opacity(0.14)
-            : .clear
+    /// "Chats", with New Chat beside it rather than as a row of its own.
+    private var chatsHeader: some View {
+        HStack {
+            Text("Chats")
+            Spacer()
+            Button {
+                navigation.select(.chat)
+                model.clearOutput()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .appFont(.callout.weight(.medium))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(canStartNewChat ? .secondary : .quaternary)
+            .disabled(!canStartNewChat)
+            .help("New Chat (⌘N)")
+            .accessibilityLabel("New Chat")
+        }
     }
 
     /// Whether the New Chat button does anything. A chat that has not been
@@ -277,9 +288,7 @@ struct RootView: View {
         // The same treatment the destinations get, rather than a 6pt dot: with
         // the list always on screen, which chat is open has to be readable at a
         // glance.
-        .listRowBackground(isOpen(conversation)
-                           ? TUFFMacTheme.accentColor.opacity(0.14)
-                           : Color.clear)
+        .listRowBackground(SidebarSelection(isSelected: isOpen(conversation)))
         .foregroundStyle(isOpen(conversation)
                          ? TUFFMacTheme.accentColor
                          : .primary)
@@ -397,12 +406,16 @@ struct RootView: View {
                     Text(model.selectedDescriptor.displayName)
                         .appFont(.caption.weight(.medium))
                         .lineLimit(2)
-                    Label(model.presentation.label, systemImage: model.loadState.isReady
-                          ? "circle.fill" : "circle")
-                        .appFont(.caption2)
-                        .foregroundStyle(model.loadState.isReady
-                                         ? TUFFMacTheme.accentColor
-                                         : .secondary)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(model.loadState.isReady
+                                  ? AnyShapeStyle(TUFFMacTheme.accentColor)
+                                  : AnyShapeStyle(.tertiary))
+                            .frame(width: 6, height: 6)
+                        Text(model.presentation.label)
+                            .appFont(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
@@ -414,10 +427,18 @@ struct RootView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(TUFFMacTheme.surfaceStyle(
-            reduceTransparency: reduceTransparency,
-            material: .thin))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            TUFFMacTheme.surfaceStyle(
+                reduceTransparency: reduceTransparency,
+                material: .thin),
+            in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Current model")
         .accessibilityValue("\(model.selectedDescriptor.displayName), \(model.presentation.label)")
@@ -426,17 +447,17 @@ struct RootView: View {
 
 }
 
-/// The desktop behind the window, blurred, with the sidebar material's tint.
-private struct BehindWindowBlur: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
+/// The selected-row highlight: an inset rounded pill, as in Finder and
+/// Mail, rather than a band running edge to edge.
+private struct SidebarSelection: View {
+    let isSelected: Bool
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(isSelected ? TUFFMacTheme.accentColor.opacity(0.16) : .clear)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 1)
+    }
 }
 
 /// Reports whether the hosting window is in full screen.
@@ -496,6 +517,7 @@ struct AppWorkspaceView: View {
     let backgroundAPI: AppBackgroundAPIController
     let updateController: AppUpdateController
     let research: ResearchWorkspace
+    let benchmarks: BenchmarkController
 
     var body: some View {
         Group {
@@ -506,6 +528,8 @@ struct AppWorkspaceView: View {
                 ResearchWorkspaceView(model: model, research: research)
             case .models:
                 ModelsWorkspaceView(model: model)
+            case .benchmarks:
+                BenchmarksWorkspaceView(model: model, controller: benchmarks)
             case .server:
                 ServerWorkspaceView(
                     model: model, controller: backgroundAPI)

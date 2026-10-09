@@ -5,37 +5,34 @@ import TUFFEngine
 
 public enum ServerInferenceEvent: Equatable, Sendable {
     case content(String)
+    /// Text from the model's reasoning channel. Never mixed into content or
+    /// tool arguments.
+    case reasoning(String)
     case toolCall(ParsedToolCall)
 }
 
 public struct ServerCompletion: Equatable, Sendable {
-    /// The thought channel without the tags that open and close it. The
-    /// ChatML decoder routes the `</think>` token's own text into the thought
-    /// it ends, which is right for the engine but noise for a client.
-    static func trimmedReasoning(_ text: String) -> String {
-        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("<think>") { trimmed.removeFirst("<think>".count) }
-        if trimmed.hasSuffix("</think>") { trimmed.removeLast("</think>".count) }
-        return trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     public let content: String
-    /// The model's thought channel, returned as `reasoning_content`.
+    /// The model's reasoning, separate from the answer. Empty when the model
+    /// did not reason.
     public let reasoning: String
     public let toolCalls: [ParsedToolCall]
     public let finishReason: String
     public let usage: OpenAIUsage
+    public var timingSeconds: [String: Double]
 
     public init(content: String,
                 reasoning: String = "",
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
-                usage: OpenAIUsage) {
+                usage: OpenAIUsage,
+                timingSeconds: [String: Double] = [:]) {
         self.content = content
         self.reasoning = reasoning
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
+        self.timingSeconds = timingSeconds
     }
 }
 
@@ -266,12 +263,15 @@ struct StructuredOutputFailure: Error, CustomDebugStringConvertible, Sendable {
 public struct ServerPreparedRequest: Sendable {
     public let request: ValidatedChatRequest
     fileprivate let promptIDs: [Int32]?
+    fileprivate let timingSeconds: [String: Double]
 
     public var promptTokenCount: Int? { promptIDs?.count }
 
-    init(request: ValidatedChatRequest, promptIDs: [Int32]? = nil) {
+    init(request: ValidatedChatRequest, promptIDs: [Int32]? = nil,
+         timingSeconds: [String: Double] = [:]) {
         self.request = request
         self.promptIDs = promptIDs
+        self.timingSeconds = timingSeconds
     }
 }
 
@@ -538,7 +538,9 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let maxContext: Int
     private let promptCacheMode: ServerPromptCacheMode
     private let promptCacheDomain: ServerPromptCacheDomain
-    private var promptCache = ServerPromptCache()
+    /// The conversation the runner holds plus any retained ones, within the
+    /// retained-state budget the loader charged against the memory plan.
+    private let conversations: ConversationStateStore
     public nonisolated let visionCapability: String
     private let visionRuntime: VisionRuntime?
     private let visionResidencyPolicy: VisionResidencyPolicy
@@ -599,6 +601,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                             visionPackURL: URL? = nil,
                             visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
                             promptCacheMode: ServerPromptCacheMode = .singlePrefix,
+                            retainedConversationBytes: Int = 0,
                             runtimeConfiguration: RuntimeConfiguration,
                             context sharedContext: MetalContext? = nil,
                             integrityPolicy: ModelIntegrityPolicy = .fullSha256
@@ -693,6 +696,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                                   maxContext: maxContext,
                                   promptCacheMode: promptCacheMode,
                                   promptCacheDomain: promptCacheDomain,
+                                  retainedConversationBytes: retainedConversationBytes,
                                   visionRuntime: visionRuntime,
                                   visionCapability: visionCapability,
                                   visionResidencyPolicy: visionResidencyPolicy)
@@ -723,6 +727,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                  maxContext: Int,
                  promptCacheMode: ServerPromptCacheMode,
                  promptCacheDomain: ServerPromptCacheDomain,
+                 retainedConversationBytes: Int,
                  visionRuntime: VisionRuntime?,
                  visionCapability: String,
                  visionResidencyPolicy: VisionResidencyPolicy) {
@@ -740,6 +745,8 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.maxContext = maxContext
         self.promptCacheMode = promptCacheMode
         self.promptCacheDomain = promptCacheDomain
+        self.conversations = ConversationStateStore(
+            budgetBytes: promptCacheMode == .off ? 0 : retainedConversationBytes)
         self.visionRuntime = visionRuntime
         self.visionResidencyPolicy = visionResidencyPolicy
         self.visionCapability = visionCapability
@@ -754,13 +761,27 @@ public actor ServerModelSession: ServerInferenceBackend {
     }
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
+        var phases = ServerInferencePhaseTimings()
+        var promptIDs: [Int32]?
         if !request.imageFiles.isEmpty {
+            let imageStart = DispatchTime.now().uptimeNanoseconds
             let softTokens = try imageSoftTokenCounts(request)
-            try validateImageTokenBudget(request, softTokens: softTokens)
+            phases.record("image_admission", since: imageStart)
+            let renderStart = DispatchTime.now().uptimeNanoseconds
+            let rendered = try renderPrompt(request)
+            phases.record("prompt_render_and_tokenization", since: renderStart)
+            let budgetStart = DispatchTime.now().uptimeNanoseconds
+            try validateImageTokenBudget(request, softTokens: softTokens, textTokens: rendered.count)
+            phases.record("image_admission", since: budgetStart)
+            if request.multimodalMessages == nil { promptIDs = rendered }
+        } else if request.multimodalMessages == nil {
+            let renderStart = DispatchTime.now().uptimeNanoseconds
+            promptIDs = try renderPrompt(request)
+            phases.record("prompt_render_and_tokenization", since: renderStart)
         }
         return ServerPreparedRequest(
             request: request,
-            promptIDs: request.multimodalMessages == nil ? try renderPrompt(request) : nil)
+            promptIDs: promptIDs, timingSeconds: phases.seconds)
     }
 
     private func imagePreprocessor(_ visionRuntime: VisionRuntime) -> Gemma4ImagePreprocessor {
@@ -820,9 +841,8 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// Rejects an image request that cannot fit the context before any pixel is
     /// decoded or any tower runs.
     private func validateImageTokenBudget(
-        _ request: ValidatedChatRequest, softTokens: [Int]
+        _ request: ValidatedChatRequest, softTokens: [Int], textTokens: Int
     ) throws {
-        let textTokens = try renderPrompt(request).count
         guard ServerImageTokenBudget.fits(
             softTokenCounts: softTokens,
             textTokens: textTokens,
@@ -912,7 +932,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                 family: model.config.family,
                 modelVariant: model.config.variant,
                 reasoning: request.reasoning,
-                preserveThinking: chatDialect == .chatml && request.preserveThinking)
+                preserveThinking: request.preserveThinking)
         } catch let error as MultimodalPromptRendererError {
             throw Self.clientError(for: error) ?? error
         }
@@ -947,6 +967,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         let request = prepared.request
+        var phases = ServerInferencePhaseTimings(prepared.timingSeconds)
         var completionStarted = false
         var completed = false
         defer {
@@ -955,7 +976,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             // leaves the cache exactly as the last completed request left it.
             // Image encoding is seconds long, so this window is not rare.
             if completionStarted, !completed {
-                promptCache.invalidate()
+                conversations.invalidateActive()
                 runner.reset()
             }
         }
@@ -970,20 +991,40 @@ public actor ServerModelSession: ServerInferenceBackend {
         // Matched before any image is encoded. A multimodal hit continues from
         // the cached KV, so the images already inside that prefix are never
         // re-encoded; only a full-prefill miss needs them.
-        let renderedTextIDs: [Int32]? = isMultimodal
-            ? nil : try (prepared.promptIDs ?? renderPrompt(request))
+        let renderedTextIDs: [Int32]?
+        if isMultimodal {
+            renderedTextIDs = nil
+        } else if let promptIDs = prepared.promptIDs {
+            renderedTextIDs = promptIDs
+        } else {
+            let renderStart = DispatchTime.now().uptimeNanoseconds
+            renderedTextIDs = try renderPrompt(request)
+            phases.record("prompt_render_and_tokenization", since: renderStart)
+        }
         var cacheMatch: ServerPromptCacheMatch = .miss
         if promptCacheMode == .singlePrefix {
-            cacheMatch = promptCache.match(
+            let planStart = DispatchTime.now().uptimeNanoseconds
+            let plan = conversations.plan(
                 domain: promptCacheDomain,
-                request: request,
+                transcript: request.conversationTranscript,
                 renderedPromptIDs: renderedTextIDs,
                 tokenizer: tokenizer,
-                modelVariant: model.config.variant)
+                modelVariant: model.config.variant,
+                conversationKey: request.promptCacheKey,
+                runner: runner,
+                allowsTextBridge: request.allowsTextBridge)
+            phases.record("cache_plan", since: planStart)
+            phases.recordCachePlan(conversations.statistics)
+            cacheMatch = plan.match
+            if plan.match.missReason == .bridgeRenderFailed {
+                ServerLog.promptCacheBridgeFailed(error: GFTokenizerError.invalidChatTemplate(
+                    "tool-result bridge failed to encode"))
+            }
         }
         let effectivePromptIDs: [Int32]
         let completionStart: RawCompletionStart
         var multimodalInput: MultimodalPrefillInput?
+        let multimodalStart = DispatchTime.now().uptimeNanoseconds
         switch cacheMatch {
         case .hit(let effective, let cached):
             effectivePromptIDs = effective
@@ -997,8 +1038,8 @@ public actor ServerModelSession: ServerInferenceBackend {
             do {
                 let bridge = try await multimodalContinuation(
                     request: request,
-                    cachedMessageCount: promptCache.inputMessageCount ?? 0)
-                effectivePromptIDs = (promptCache.kvBackedTokenIDs ?? [])
+                    cachedMessageCount: conversations.active?.inputMessages.count ?? 0)
+                effectivePromptIDs = (conversations.active?.kvBackedTokenIDs ?? [])
                     + bridge.effectiveTokenIDs
                 multimodalInput = bridge
                 completionStart = .resume(cachedPromptTokens: cached)
@@ -1008,14 +1049,13 @@ public actor ServerModelSession: ServerInferenceBackend {
                 throw CancellationError()
             } catch {
                 ServerLog.promptCacheBridgeFailed(error: error)
-                promptCache.invalidate()
+                conversations.invalidateActive()
                 let rendered = try await renderMultimodal(request)
                 effectivePromptIDs = rendered.effectiveTokenIDs
                 multimodalInput = rendered
                 completionStart = .reset
             }
         case .miss:
-            promptCache.invalidate()
             if let renderedTextIDs {
                 effectivePromptIDs = renderedTextIDs
                 multimodalInput = nil
@@ -1025,6 +1065,9 @@ public actor ServerModelSession: ServerInferenceBackend {
                 multimodalInput = rendered
             }
             completionStart = .reset
+        }
+        if multimodalInput != nil {
+            phases.record("multimodal_render_and_encode", since: multimodalStart)
         }
         // What the template renders versus what actually prefills: on a text
         // cache hit the two genuinely differ, and that difference is the point
@@ -1053,8 +1096,145 @@ public actor ServerModelSession: ServerInferenceBackend {
         let decoder = Self.assistantDecoder(
             tokenizer: tokenizer, tools: request.tools,
             reasoning: request.reasoning)
+
+        completionStarted = true
+        let decoded = try await Self.decodeStructuredCompletion(
+            producer: runner,
+            tokenizer: tokenizer,
+            decoder: decoder,
+            renderedPromptIDs: renderedPromptIDs,
+            effectivePromptIDs: effectivePromptIDs,
+            multimodalInput: multimodalInput,
+            config: config,
+            stopStrings: request.generationConfig.stopStrings,
+            needsToolTemplate: needsToolTemplate,
+            context: context,
+            scratch: scratch,
+            prefillConfig: prefillConfig,
+            start: completionStart,
+            onEvent: onEvent)
+        let result = decoded.result
+        let reason: String
+        if !decoded.calls.isEmpty {
+            reason = "tool_calls"
+        } else if result.reason == .maxTokens {
+            reason = "length"
+        } else {
+            reason = "stop"
+        }
+        // Publishing an image turn is safe now that the entry carries per-message
+        // image identity: a later turn whose images differ is refused by
+        // `imagesDiverged` rather than resumed onto a KV built from a different
+        // picture.
+        if promptCacheMode == .singlePrefix {
+            conversations.publish(ConversationCache.entry(
+                domain: promptCacheDomain,
+                transcript: request.conversationTranscript,
+                content: decoded.content,
+                thinking: decoded.reasoning,
+                calls: decoded.calls,
+                result: result,
+                stopStringFiltered: decoded.stopStringFiltered,
+                conversationKey: request.promptCacheKey))
+        } else {
+            conversations.invalidateActive()
+        }
+        completed = true
+        var timingSeconds = phases.seconds
+        timingSeconds["prefill"] = result.prefillSeconds
+        timingSeconds["decode"] = result.decodeSeconds
+        return ServerCompletion(
+            content: decoded.content,
+            reasoning: decoded.reasoning,
+            toolCalls: decoded.calls,
+            finishReason: reason,
+            usage: OpenAIUsage(promptTokens: result.prefillTokens,
+                               completionTokens: result.newTokens,
+                               totalTokens: result.prefillTokens + result.newTokens,
+                               cachedTokens: result.cachedPromptTokens,
+                               reasoningTokens: decoded.reasoning.isEmpty
+                                ? nil : min(decoded.reasoningTokens, result.newTokens)),
+            timingSeconds: timingSeconds)
+    }
+
+    private func renderPrompt(_ request: ValidatedChatRequest) throws -> [Int32] {
+        let promptIDs: [Int32]
+        if chatDialect == .harmony {
+            guard let reasoningEffort = request.reasoningEffort,
+                  let currentDate = request.harmonyCurrentDate else {
+                throw ServerRequestError.invalid(
+                    message: "Harmony reasoning metadata is missing",
+                    param: "reasoning_effort",
+                    code: "invalid_request")
+            }
+            promptIDs = try tokenizer.encodeHarmonyChat(
+                messages: request.messages,
+                tools: request.tools,
+                reasoningEffort: reasoningEffort,
+                currentDate: currentDate)
+        } else if usesToolTemplate(request) {
+            promptIDs = try tokenizer.encodeToolChat(
+                messages: request.messages,
+                tools: request.tools,
+                reasoning: request.reasoning,
+                preserveThinking: request.preserveThinking)
+        } else {
+            let rendered = try tokenizer.applyChatTemplate(
+                request.messages,
+                modelVariant: model.config.variant,
+                reasoning: request.reasoning,
+                preserveThinking: request.preserveThinking)
+            promptIDs = tokenizer.encode(rendered, addBOS: false)
+        }
+        guard promptIDs.count < maxContext else {
+            throw ServerRequestError.invalid(
+                message: "prompt exceeds the configured context",
+                param: "messages",
+                code: "context_length_exceeded")
+        }
+        return promptIDs
+    }
+
+    private func usesToolTemplate(_ request: ValidatedChatRequest) -> Bool {
+        !request.tools.isEmpty || request.messages.contains {
+            $0.role == .developer || $0.role == .tool || !$0.toolCalls.isEmpty
+        }
+    }
+}
+
+/// What one structured completion produced: the raw decode result plus the
+/// visible content and tool calls the assistant decoder accepted.
+struct ServerStructuredDecodeOutcome: Sendable {
+    let result: RawDecodeResult
+    let content: String
+    var reasoning: String = ""
+    var reasoningTokens: Int = 0
+    let calls: [ParsedToolCall]
+    let stopStringFiltered: Bool
+}
+
+extension ServerModelSession {
+    /// Runs the raw completion loop through the structured assistant decoder.
+    /// This is the server's production decode path; it is static so tests can
+    /// drive it with a scripted producer and a real tokenizer.
+    static func decodeStructuredCompletion(
+        producer: any LogitProducer,
+        tokenizer: GFTokenizer,
+        decoder: StructuredAssistantDecoder,
+        renderedPromptIDs: [Int32],
+        effectivePromptIDs: [Int32],
+        multimodalInput: MultimodalPrefillInput?,
+        config: GenerationConfig,
+        stopStrings: [String],
+        needsToolTemplate: Bool,
+        context: MetalContext,
+        scratch: RawCompletionScratch,
+        prefillConfig: PrefillRuntimeConfig,
+        start: RawCompletionStart,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerStructuredDecodeOutcome {
         let state = ServerDecodeState(
-            stopMatcher: StreamingStopMatcher(stops: request.generationConfig.stopStrings))
+            stopMatcher: StreamingStopMatcher(stops: stopStrings))
 
         let handle: @Sendable ([StructuredAssistantEvent]) -> Void = { events in
             for event in events {
@@ -1067,9 +1247,11 @@ public actor ServerModelSession: ServerInferenceBackend {
                     }
                     if state.stopMatcher.isStopped { state.shouldStop = true }
                 case .thinking(let text):
-                    // Kept apart from visible content. Non-streaming replies
-                    // return it as `reasoning_content`; streams leave it out.
+                    // Reasoning is reported in its own field and never passes
+                    // through the stop-string matcher, which applies to the
+                    // answer a client shows.
                     state.reasoning += text
+                    onEvent(.reasoning(text))
                 case .toolCall(let call):
                     state.calls.append(call)
                     onEvent(.toolCall(call))
@@ -1077,9 +1259,8 @@ public actor ServerModelSession: ServerInferenceBackend {
             }
         }
 
-        completionStarted = true
         let result = try await runRawCompletion(
-            producer: runner,
+            producer: producer,
             tokenizer: tokenizer,
             promptIds: effectivePromptIDs,
             multimodalInput: multimodalInput,
@@ -1087,7 +1268,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             context: context,
             scratch: scratch,
             prefillConfig: prefillConfig,
-            start: completionStart,
+            start: start,
             shouldStop: { state.shouldStop }) { @Sendable progress in
                 guard state.decodingError == nil else { return }
                 do {
@@ -1114,11 +1295,14 @@ public actor ServerModelSession: ServerInferenceBackend {
         // Stop tokens are intentionally not emitted as `.token` progress by
         // the raw loop. Most dialects finish their structure before that
         // boundary; Harmony's `<|call|>` is both the tool-payload terminator and
-        // a stop token, so the structured decoder must consume the recorded
-        // boundary explicitly before `finish()` validates its state.
+        // a stop token, so the structured decoder must consume it explicitly
+        // before `finish()` validates its state. Only the withheld boundary is
+        // replayed: a token that ended generation at the length limit, a stop
+        // string or a cancellation was already consumed through `.token`, and
+        // a second pass would close a Gemma, Qwen or MiniMax call twice.
         if state.decodingError == nil {
             do {
-                for tokenID in result.uncommittedBoundaryTokenIDs {
+                for tokenID in result.undeliveredBoundaryTokenIDs {
                     handle(try decoder.consume(tokenID: tokenID, delta: ""))
                 }
             } catch {
@@ -1165,81 +1349,13 @@ public actor ServerModelSession: ServerInferenceBackend {
             state.content += tail
             onEvent(.content(tail))
         }
-        let reason: String
-        if !state.calls.isEmpty {
-            reason = "tool_calls"
-        } else if result.reason == .maxTokens {
-            reason = "length"
-        } else {
-            reason = "stop"
-        }
-        // Publishing an image turn is safe now that the entry carries per-message
-        // image identity: a later turn whose images differ is refused by
-        // `imagesDiverged` rather than resumed onto a KV built from a different
-        // picture.
-        if promptCacheMode == .singlePrefix {
-            promptCache.publish(
-                domain: promptCacheDomain,
-                request: request,
-                content: state.content,
-                calls: state.calls,
-                result: result,
-                stopStringFiltered: state.stopMatcher.isStopped)
-        }
-        completed = true
-        return ServerCompletion(
+        return ServerStructuredDecodeOutcome(
+            result: result,
             content: state.content,
-            reasoning: ServerCompletion.trimmedReasoning(state.reasoning),
-            toolCalls: state.calls,
-            finishReason: reason,
-            usage: OpenAIUsage(promptTokens: result.prefillTokens,
-                               completionTokens: result.newTokens,
-                               totalTokens: result.prefillTokens + result.newTokens,
-                               cachedTokens: result.cachedPromptTokens))
-    }
-
-    private func renderPrompt(_ request: ValidatedChatRequest) throws -> [Int32] {
-        let promptIDs: [Int32]
-        if chatDialect == .harmony {
-            guard let reasoningEffort = request.reasoningEffort,
-                  let currentDate = request.harmonyCurrentDate else {
-                throw ServerRequestError.invalid(
-                    message: "Harmony reasoning metadata is missing",
-                    param: "reasoning_effort",
-                    code: "invalid_request")
-            }
-            promptIDs = try tokenizer.encodeHarmonyChat(
-                messages: request.messages,
-                tools: request.tools,
-                reasoningEffort: reasoningEffort,
-                currentDate: currentDate)
-        } else if usesToolTemplate(request) {
-            promptIDs = try tokenizer.encodeToolChat(
-                messages: request.messages,
-                tools: request.tools,
-                reasoning: request.reasoning,
-                preserveThinking: chatDialect == .chatml && request.preserveThinking)
-        } else {
-            let rendered = try tokenizer.applyChatTemplate(
-                request.messages,
-                modelVariant: model.config.variant,
-                reasoning: request.reasoning,
-                preserveThinking: chatDialect == .chatml && request.preserveThinking)
-            promptIDs = tokenizer.encode(rendered, addBOS: false)
-        }
-        guard promptIDs.count < maxContext else {
-            throw ServerRequestError.invalid(
-                message: "prompt exceeds the configured context",
-                param: "messages",
-                code: "context_length_exceeded")
-        }
-        return promptIDs
-    }
-
-    private func usesToolTemplate(_ request: ValidatedChatRequest) -> Bool {
-        !request.tools.isEmpty || request.messages.contains {
-            $0.role == .developer || $0.role == .tool || !$0.toolCalls.isEmpty
-        }
+            reasoning: state.reasoning,
+            reasoningTokens: decoder.reasoningTokenCount,
+            calls: state.calls,
+            stopStringFiltered: state.stopMatcher.isStopped)
     }
 }
 

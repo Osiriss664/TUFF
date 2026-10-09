@@ -103,6 +103,9 @@ struct OpenAIRequestFieldTests {
         #expect(omp.preserveThinking == true)
         let validated = try OpenAIRequestValidator.validate(omp, modelID: "m", dialect: .chatml)
         #expect(validated.reasoning == .on)
+        #expect(validated.preserveThinking)
+        #expect(validated.conversationTranscript.preserveThinking)
+        #expect(!validated.allowsTextBridge)
 
         // The template argument alone drives TUFF's own control.
         let nested = try Self.decode(#""chat_template_kwargs":{"enable_thinking":false}"#)
@@ -110,29 +113,30 @@ struct OpenAIRequestFieldTests {
         #expect(try Self.decode(#""chat_template_kwargs":{}"#).enableThinking == nil)
     }
 
-    /// The KV cache holds the reasoning the model generated, so a ChatML
-    /// history keeps it to re-render the same prompt.
-    @Test func chatMLAssistantReasoningIsKeptAndOtherFamiliesDropIt() throws {
-        let body = #"""
+    @Test func assistantReasoningSurvivesValidationAndPreserveThinkingChangesCacheIdentity() throws {
+        let data = Data(#"""
         {"model":"m","preserve_thinking":true,"messages":[
-        {"role":"user","content":"q"},
-        {"role":"assistant","content":"a","reasoning_content":"  chain\n"},
-        {"role":"user","content":"next","reasoning_content":"ignored"}]}
-        """#
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(body.utf8))
-        #expect(request.messages[1].reasoningContent == "  chain\n")
+          {"role":"user","content":"first"},
+          {"role":"assistant","content":"answer","reasoning_content":"checked carefully"},
+          {"role":"user","content":"next"}]}
+        """#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m", dialect: .chatml)
+        #expect(validated.messages[1].thinking == "checked carefully")
+        #expect(validated.conversationTranscript.messages[1].thinking == "checked carefully")
+        #expect(validated.preserveThinking)
+        #expect(!validated.allowsTextBridge)
+        let ordinary = try OpenAIRequestValidator.validate(try Self.decode(""), modelID: "m")
+        #expect(!ordinary.preserveThinking)
+        #expect(ordinary.allowsTextBridge)
+    }
 
-        let chatml = try OpenAIRequestValidator.validate(request, modelID: "m", dialect: .chatml)
-        #expect(chatml.messages[1].thinking == "  chain\n")
-        #expect(chatml.messages[2].thinking == nil)
-        #expect(chatml.preserveThinking)
-
-        let gemma = try OpenAIRequestValidator.validate(request, modelID: "m", dialect: .gemma)
-        #expect(gemma.messages[1].thinking == nil)
-
-        let plain = try Self.decode("")
-        #expect(!(try OpenAIRequestValidator.validate(plain, modelID: "m", dialect: .chatml)
-            .preserveThinking))
+    @Test func reasoningOnNonAssistantMessagesIsRefused() throws {
+        let data = Data(#"{"model":"m","messages":[{"role":"user","content":"x","reasoning_content":"y"}]}"#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        #expect(throws: ServerRequestError.self) {
+            try OpenAIRequestValidator.validate(request, modelID: "m")
+        }
     }
 
     @Test func chatTemplateKwargsAcceptOnlyTheThinkingSwitches() throws {
