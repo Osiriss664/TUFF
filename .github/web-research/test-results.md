@@ -485,3 +485,11 @@ most 2 pages, and some cited sources they never opened.
 - Always look at the sources, especially for opening hours, prices and other
   details that change often.
 - 8 to 12 steps is a good setting for Qwen3.6.
+
+## Page links and answer sizing (d92c0c8, 7f85f1c)
+
+- **d92c0c8** (stricter rule for opening pages): see the measurements in the
+  research notes; confirmed on the Mac.
+- **7f85f1c** (shortening protects page text, per-site stop): Berlin result
+  **PLACEHOLDER, to be filled once the Mac run is green** (page text in the
+  final request, refused reads per site, seat figures in the answer).

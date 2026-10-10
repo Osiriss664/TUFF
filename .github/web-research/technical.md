@@ -220,15 +220,19 @@ Before each request, `State.compact` shortens older messages until the
 conversation fits (aiming at about three quarters of the budget). The system
 prompt, the question, the newest tool result and the last message are not
 shortened, except in the emergency step after a second context overflow.
-In order:
+Page text is shortened last, so it survives a long search. In order:
 
 1. A page read twice keeps only its newest copy.
-2. Older pages are cut to about 900 characters: their lead and the passages
+2. Older search results lose their snippets, stale "Research so far" lines go,
+   and long older draft answers (over 600 characters) are cut to their start.
+3. Older pages are cut to about 900 characters: their lead and the passages
    that contain words from the question and the searches, in page order.
-   Older search results lose their snippets at the same time, and long older
-   draft answers (over 600 characters) are cut to their start.
-3. If that is not enough, the passages are cut to about 300 characters.
-4. If that is still not enough, an older result shrinks to its first line.
+4. If that is not enough, the passages are cut to about 300 characters.
+5. Other old results shrink to their first line. A page does so only in the
+   emergency step.
+
+Text that is already within its limit is not shortened again, so repeated
+shortening does not wear a page down to its first words.
 
 Compaction is done by the loop, never by the model, so page text cannot steer
 what is kept. Compaction only makes room: it never ends a run. The system
@@ -275,7 +279,14 @@ with the same API (for example Ollama) works.
   MiniMax, GPT-OSS), so the Qwen template renders earlier turns the same way
   whether reasoning is on or off. Only Gemma with reasoning off leaves it
   out. `TUFF_RESEARCH_PRESERVE_THINKING=on|off|auto` (default `auto`) in the
-  environment of `tuff research` overrides this for measurements. The final answer keeps the tools in the
+  environment of `tuff research` overrides this for measurements. `TUFF_RESEARCH_MARKERS=off|fixed|nonce` chooses how untrusted page text is
+  fenced (`nonce` adds a per-run code to the markers; opt-in).
+  `TUFF_RESEARCH_DUMP_ANSWER_REQUEST=<path>` writes the final answer request
+  to a file, for measuring what the model really sees.
+  A site that refuses a page three times in a row (HTTP 401, 403, 429 or 451)
+  is skipped for the rest of the run. A rewritten answer is only requested when
+  it fits the window, and citations of pages the research never read are
+  removed from the answer, with a note in the report. The final answer keeps the tools in the
   prompt (see [Asking for the answer](#asking-for-the-answer)), so it hits
   the cache too (on a Mac, 9,141 of 10,427 tokens). Remaining cache misses:
   after a turn with two tool calls, when reasoning switches from on to off,
@@ -488,6 +499,7 @@ CLI (`tuff research <question> [options]`):
 | `--tool-calls <1…8>` | 4 | Tool calls the model may make per turn. |
 | `--passages on\|off` | off | Tried on a Mac (round B), kept as an opt-in option: more sources per question, but worse answers on two questions. `open_page` returns the passages of a page that best match the question, ranked by BM25 in the sandbox, instead of the page front to back; `offset` then counts passages. |
 | `--only-seen-urls on\|off` | on | Tried on a Mac (round C). `open_page` opens only addresses that appeared in a search result, a page read or the question, in the spelling shown. Off is for measuring the model alone. Tried on a Mac (commit `3871fc5`): `open_page` also refuses private, loopback and link-local addresses itself, with this switch off too. |
+| `--page-links on\|off` | off | Tried on a Mac (commit `d92c0c8`). With the default `open_page` opens only addresses from search results, from pages already read, and from the question; an address that appears only in the text of a page is refused. `on` is the earlier rule, for comparison. Berlin question: 21 minutes against 38, 7 shortenings against 21, and the model no longer made up addresses. |
 | `--min-pages <1…6>` | 3 | Pages to read: asked for in the prompt, and the target of the loop's own page opening. |
 | `--auto-open on\|off` | on | The loop opens top results itself when too few pages are read. |
 | `--nudges on\|off` | on | Ask once to search first, to open pages and to look wider. |
