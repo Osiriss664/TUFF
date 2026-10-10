@@ -5,8 +5,9 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `d01bc38` was the last one tested on a Mac, on top of TUFF 8.1.1;
-rounds B and C, up to `86befe9`, are pushed and still in testing). File paths are relative to
+branch (commit `2cc3306` was the last one tested on a Mac; rounds B to E were tried
+there. Round F, the private-address refusal in `open_page` and the merge of
+TUFF 8.3.1 are pushed, up to `5503307`, and still in testing). File paths are relative to
 that branch.
 
 [Back to the front page](../README.md) ·
@@ -482,8 +483,8 @@ CLI (`tuff research <question> [options]`):
 | `--output <file.md>` | | Also write the report to a new file. |
 | `--search-results <1…10>` | 5 | Results per search. |
 | `--tool-calls <1…8>` | 4 | Tool calls the model may make per turn. |
-| `--passages on\|off` | off | In testing (round B). `open_page` returns the passages of a page that best match the question, ranked by BM25 in the sandbox, instead of the page front to back; `offset` then counts passages. |
-| `--only-seen-urls on\|off` | on | In testing (round C). `open_page` opens only addresses that appeared in a search result, a page read or the question, in the spelling shown. Off is for measuring the model alone. |
+| `--passages on\|off` | off | Tried on a Mac (round B), kept as an opt-in option: more sources per question, but worse answers on two questions. `open_page` returns the passages of a page that best match the question, ranked by BM25 in the sandbox, instead of the page front to back; `offset` then counts passages. |
+| `--only-seen-urls on\|off` | on | Tried on a Mac (round C). `open_page` opens only addresses that appeared in a search result, a page read or the question, in the spelling shown. Off is for measuring the model alone. In testing: `open_page` also refuses private, loopback and link-local addresses itself, with this switch off too. |
 | `--min-pages <1…6>` | 3 | Pages to read: asked for in the prompt, and the target of the loop's own page opening. |
 | `--auto-open on\|off` | on | The loop opens top results itself when too few pages are read. |
 | `--nudges on\|off` | on | Ask once to search first, to open pages and to look wider. |

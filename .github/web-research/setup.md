@@ -128,7 +128,7 @@ with an error status. Useful options:
 | `--min-pages 4` | How many pages it should read (1 to 6, default 3). |
 | `--search-results 8` | Results per search (1 to 10, default 5). |
 | `--show-thinking` | Turns on the model's reasoning and prints it. |
-| `--passages on\|off` | Read the best matching passages of a page first (default off; in testing). |
+| `--passages on\|off` | Read the best matching passages of a page first (default off: it read more sources but made some answers worse). |
 | `--help` | Lists every option, including the safety-net switches. |
 
 When you are done, stop and remove the sandbox VM:

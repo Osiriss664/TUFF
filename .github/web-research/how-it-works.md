@@ -141,18 +141,38 @@ While a run is going, your Mac does not go to sleep on its own (the screen
 may still turn off, and closing the lid still puts it to sleep). The app
 shows how long a run took as, for example, "19 s", "3 min" or "14 min 5 s".
 
-## In testing
+## Newest changes
 
-Two further rounds are pushed to the feature branch but have not been tried on
-a Mac yet, so no results are claimed:
+Rounds B to E were tried on a Mac (see [Test results](test-results.md)):
 
-- **Relevant passages first.** With `--passages on` (off by default), a page
-  is read as the passages that best match the question, ranked by BM25,
-  instead of front to back.
-- **Stricter page opening.** `open_page` only opens addresses the research
-  showed (in a search result, in a page read or in the question), fetched in
-  the spelling shown. Hidden Unicode format characters are stripped. The app
-  starts a fresh sandbox for each question.
+- **Relevant passages first (round B).** With `--passages on`, a page is
+  read as the passages that best match the question, ranked by BM25, instead
+  of front to back. It read more sources per question, but one long question
+  got worse and another presented an upcoming election as held, so it stays
+  **off by default** as an opt-in option.
+- **Only addresses the research showed (round C).** `open_page` opens only
+  addresses the research showed (in a search result, in a page read or in the
+  question), fetched in the spelling shown. Hidden Unicode format characters
+  are stripped, and the app starts a fresh sandbox for each question
+  (about 1.8 seconds). Made-up or mixed-up addresses are refused.
+- **Cleaner sources and checks (rounds D and E).** A page that gave no text
+  (for example a 403 error) gets no source number, and a figure that cites
+  no real source is reported. The model gets one reminder to open unread
+  pages before a run is stopped for repeating searches. Error codes such as
+  "403-Fehler" are not treated as figures, citations written like `[4\]` are
+  read, and a short answer that stops in the middle of a sentence is asked
+  once to continue. Fewer false alarms too ("YoY", "FY2026",
+  "403 Forbidden").
+
+Still in testing, with no results claimed yet:
+
+- **Round F.** A request for the answer keeps room for the reply and is no
+  longer shortened early, a continuation that starts a source entry begins on
+  a new line, and two-digit invented figures are checked in answers whose
+  body cites nothing.
+- **Private addresses refused.** `open_page` itself refuses private,
+  loopback and link-local addresses, even when a page printed them.
+- **TUFF 8.3.1.** The upstream release is merged into the research branch.
 
 ## What it cannot do
 

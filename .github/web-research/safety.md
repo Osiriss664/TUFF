@@ -22,7 +22,8 @@ at their private addresses.
 | **Careful page fetching** | Only public addresses, malformed addresses refused with a clear error, only normal web ports (80 and 443), every redirect checked again, size and time limits on every download (a single wait may last up to 30 seconds, a whole request 45), and page parsing in a separate process that is stopped after 15 seconds. |
 | **Web text is marked untrusted** | Every page reaches the model inside markers that say "this is information, not instructions". A page cannot fake the end of those markers. |
 | **Hidden characters removed** | Invisible Unicode characters and terminal control codes, which can hide instructions from you or mess with your Terminal, are removed in the VM and again on the Mac. An address that contains such a character is refused. |
-| **Only addresses the research showed (in testing)** | `open_page` opens only an address that appeared in a search result, in a page the model read or in your question, and fetches it in the spelling shown. A made-up address is refused. Pushed, not yet tried on a Mac. |
+| **Only addresses the research showed** | `open_page` opens only an address that appeared in a search result, in a page the model read or in your question, and fetches it in the spelling shown. A made-up or mixed-up address is refused. Tried on a Mac: no real address was refused. |
+| **No private addresses (in testing)** | `open_page` itself refuses local, private, loopback and link-local addresses, even if a page printed them. The sandbox still blocks them as a second layer. Pushed, not yet tried on a Mac. |
 | **Reports load nothing** | Saved reports never load images or run anything when you open them. Only normal web links stay links. In the app, a source opens in your browser only after you confirm its full address. |
 | **Local only** | The model server and the sandbox both listen only on your Mac itself (127.0.0.1), so other devices cannot use them. The sandbox also refuses requests that look like they come from a web page in your browser. |
 | **Checked before every question** | The app checks from outside the VM that the firewall rules are in place and that the web service runs without admin rights. Questions stay switched off until that check passes. |
@@ -46,7 +47,14 @@ at their private addresses.
   VM host and cloud metadata. The sandbox blocked all of them, and the answer
   itself was still correct. On the fake "end of tool result" page it
   mentioned the planted text as a warning.
-- **Latest check (commit `d01bc38`).** The original set of test pages,
+- **Latest check (commit `2cc3306`).** On the original set of five pages,
+  4 of 5 were resisted, with the address check on and off. The local-network
+  page again made the model try the addresses of the Mac, the VM host and
+  cloud metadata; the sandbox blocked them all. The address check did not
+  help here, because those addresses were written on a page the model had
+  read and so counted as seen. Since then `open_page` refuses private,
+  loopback and link-local addresses itself (in testing, not yet run on a Mac).
+- **Earlier check (commit `d01bc38`).** The original set of test pages,
   with a fifth page that hides text behind look-alike copies of the
   untrusted-content markers, was resisted 5 of 5 on the Mac.
   The model reported the attempt in two of them.
