@@ -4,253 +4,139 @@
 
 <h1 align="center">TUFF</h1>
 
-TUFF runs language models locally on Apple Silicon. It includes a native Mac
-chat app, model downloader, Swift and Metal inference engine, command-line
-tools, and a local OpenAI-compatible server.
+<p align="center">
+  The local AI app built for the Mac. Runs models far bigger than your Mac's memory.
+</p>
 
-[Download latest](https://github.com/rexmhall09/TUFF/releases/latest) ·
-[Website](https://rexmhall09.github.io/TUFF/) · [Contribute](CONTRIBUTING.md)
+<p align="center">
+  <a href="https://github.com/rexmhall09/TUFF/releases/latest">Download</a> ·
+  <a href="https://rexmhall09.github.io/TUFF/">Website</a> ·
+  <a href="https://rexmhall09.github.io/TUFF/benchmarks/">Benchmarks</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a> ·
+  <a href="https://github.com/rexmhall09/TUFF/discussions">Discussions</a>
+</p>
 
-![TUFF chat with Qwen3.8 Flash Next](docs/assets/tuff-chat.png)
+![TUFF chatting with Qwen3.8 Flash Next on a 16 GB MacBook Air](docs/assets/tuff-chat.png)
 
-TUFF keeps shared weights file-backed and reads routed experts into a bounded
-cache. This lets supported mixture-of-experts checkpoints run without loading
-all their experts into memory. Streaming has a cost: a model's disk size alone
-does not tell you its memory needs or how quickly it will answer.
+TUFF runs language models locally on Apple Silicon. The app is native
+SwiftUI and the inference engine is written from scratch in Swift and Metal,
+so it isn't a wrapper around llama.cpp or MLX. It's open source, and nothing
+you type leaves your Mac unless you turn on web search.
 
-## Why TUFF
+**Qwen3.8 Flash Next is a 111 GB model, and TUFF runs it on a 16 GB MacBook
+Air.** Most apps need the whole model in memory. TUFF keeps a
+mixture-of-experts model's experts on the SSD and loads only the few each
+token needs into a small cache. GPT-OSS 120B and MiniMax M2.7 run the same
+way.
 
-TUFF combines a native Swift Mac app with bounded expert streaming, model
-downloads, image companions, a CLI and a local server. Its app and inference
-engine are [open source](LICENSE), and packaged updates use signed archives.
-The practical benefit is access to supported models whose installs exceed
-your Mac's memory: GPT-OSS 120B, Flash Next and MiniMax all completed the
-[release smoke checks](docs/MODEL_VALIDATION.md) on a 16 GB M2 MacBook Air.
-Their measured rates and variation are listed below.
-
-Here is how that focus compares with other local-model tools. The linked
-project documentation was checked September 30, 2026.
-
-| | TUFF | [LM Studio](https://lmstudio.ai/docs/app) | [Ollama](https://ollama.com/blog/new-app) | [Colibrì](https://github.com/JustVugg/colibri) | [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) |
-| --- | :-: | :-: | :-: | :-: | :-: |
-| Designed exclusively for Apple Silicon Macs | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Desktop chat interface | ✅ | ✅ | ✅ | ◐ | ✅ |
-| Command-line tools | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Local OpenAI-compatible server | ✅ | ✅ | ✅ | ✅ | ◐ |
-| Image input with supported models | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Dense-model inference | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Inference engine independent of MLX / llama.cpp | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Built-in bounded MoE expert streaming from disk | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Fully open-source desktop app | ✅ | ❌ | ✅ | ✅ | ✅ |
-| Windows and Linux support | ❌ | ✅ | ✅ | ✅ | ❌ |
-| Model selection | 9 checkpoints | GGUF / MLX catalog | Model library | Selected MoE families | Gemma 26B |
-
-✅ available · ◐ limited or experimental · ❌ unavailable in the documented
-project scope
-
-Colibrì's desktop shell wraps its web interface. TurboFieldfare's server is
-experimental. Ollama's desktop chat runs on Mac and Windows; its CLI also runs
-on Linux, and its [API supports OpenAI clients](https://docs.ollama.com/api/openai-compatibility).
-Image support depends on the selected model and any required companion pack.
-Colibrì and TurboFieldfare document MoE inference rather than dense-model
-support. LM Studio uses llama.cpp and MLX; Ollama also uses those backends
-([MLX announcement](https://ollama.com/blog/mlx)). Both offer useful model and
-app tooling around them. TUFF, Colibrì and TurboFieldfare implement their own
-inference engines. The streaming row means an explicit bounded expert cache,
-not OS paging or CPU offload. LM Studio documents [CPU/GPU expert placement](https://lmstudio.ai/blog/lmstudio-v0.3.23);
-Ollama documents [model memory allocation and scheduling](https://ollama.com/blog/new-model-scheduling).
-LM Studio's [desktop app has proprietary terms](https://lmstudio.ai/app-terms).
-Ollama's app and runtime are in its [open-source repository](https://github.com/ollama/ollama).
-
-TUFF's catalog is smaller than general model libraries. Its release validation
-covers the exact checkpoints and settings documented here. Other streaming
-engines also run models larger than RAM; this comparison does not claim that
-TUFF alone can do so. We have not benchmarked these tools against TUFF on the
-same machine, so this table compares capabilities rather than speed.
+That has a cost: on a 16 GB Air, Flash Next writes about 1.7 tokens a second.
+Smaller models are quick, and Macs with more memory do better. The
+[benchmark leaderboard](https://rexmhall09.github.io/TUFF/benchmarks/) shows
+how each model runs on real Macs.
 
 ## Install
 
-You need an Apple Silicon Mac with macOS 15 or newer.
+You need an Apple Silicon Mac on macOS 15 or newer.
 
-1. Download the ZIP from the [latest release](https://github.com/rexmhall09/TUFF/releases/latest).
-2. Extract it and move `TUFF.app` into Applications.
-3. Open TUFF and choose a checkpoint in Models.
+1. Download the ZIP from the [latest release](https://github.com/rexmhall09/TUFF/releases/latest),
+   unzip it and move `TUFF.app` to Applications.
+2. Open TUFF, go to **Models** and install one. Gemma 4 E2B is a quick first
+   download.
 
-The app is ad-hoc signed, not notarized. macOS may block the first launch. Use
-Control-click > Open, or allow it in System Settings > Privacy & Security.
-You can inspect the source and build it yourself instead.
-
-Check the downloaded archive against the checksum from the same release:
+TUFF isn't notarized, so the first time, Control-click the app and choose
+Open. Or use Homebrew, which also adds the `tuff` command:
 
 ```sh
-shasum -a 256 -c TUFF-vVERSION-macos-arm64.zip.sha256
+brew tap rexmhall09/tuff https://github.com/rexmhall09/TUFF.git
+brew install --cask rexmhall09/tuff/tuff
 ```
 
-Sparkle checks for updates automatically and verifies archives against the
-embedded EdDSA public key. Update preferences are in Settings.
+TUFF updates itself. If an update ever stops it from opening,
+[recovery](docs/RELEASE_RECOVERY.md) gets you back without losing anything.
 
-## Use the app
+## What's in it
 
-- **Chat** saves named conversations and restores them after a restart. Each
-  answer identifies its model. Chat supports reasoning, Markdown, mathematical
-  notation, and image and file attachments.
-- **Models** installs the nine supported text checkpoints. Optional image
-  companions are separate downloads on the model card.
-- **Server** runs the Background API, a loopback endpoint that starts at login
-  and works whether TUFF is open or closed. It loads the installed model each
-  request names and unloads it after a configurable idle delay.
-- **Settings** controls context, sampling, expert cache, prefill, and updates.
-  Settings are saved per model.
+- **Chat** with reasoning, Markdown, math, and image and file attachments.
+  Going back to a recent chat continues from where the model left off instead
+  of reading the whole conversation again.
+- **Web and Files search.** Off until you turn them on. The model can search
+  the web or folders you pick, and cites what it used.
+  [How search works](docs/SEARCH.md).
+- **Benchmarks.** Measure any installed model on your Mac and share the result
+  on the [leaderboard](https://rexmhall09.github.io/TUFF/benchmarks/).
+  [How benchmarks work](docs/BENCHMARKS.md).
+- **Background API.** A local OpenAI-compatible server for agents and other
+  apps. It loads whichever installed model a request names.
+  [Server and API](docs/LOCAL_SERVER.md).
 
-### Models and memory
+| Model | Download | Minimum memory | Images |
+| --- | ---: | ---: | :-: |
+| Gemma 4 E2B | 2.6 GB | 8 GB | Optional |
+| Gemma 4 E4B | 4.2 GB | 8 GB | Optional |
+| Gemma 4 12B QAT | 11.0 GB | 16 GB | Optional |
+| Gemma 4 26B-A4B | 14.3 GB | 8 GB | Optional |
+| Qwen3.6 35B-A3B | 19.6 GB | 8 GB | Optional |
+| GPT-OSS 20B | 13.8 GB | 16 GB | No |
+| GPT-OSS 120B | 65.3 GB | 16 GB | No |
+| MiniMax M2.7 | 128.7 GB | 16 GB, M2 or newer | No |
+| Qwen3.8 Flash Next | 110.9 GB | 16 GB, M2 or newer | Optional |
 
-| Checkpoint | Text install | Minimum unified memory | Image companion |
-| --- | ---: | ---: | --- |
-| Gemma 4 E2B IT | 2.64 GB | 8 GB | Optional |
-| Gemma 4 E4B IT | 4.23 GB | 8 GB | Optional |
-| Gemma 4 12B IT QAT | 10.98 GB | 16 GB | Optional |
-| Gemma 4 26B-A4B IT | 14.29 GB | 8 GB | Optional |
-| Qwen3.6 35B-A3B | 19.55 GB | 8 GB | Optional |
-| GPT-OSS 20B | 13.79 GB | 16 GB | No |
-| GPT-OSS 120B | 65.29 GB | 16 GB | No |
-| MiniMax M2.7 | 128.71 GB | 16 GB, M2 or newer | No |
-| Qwen3.8 Flash Next | 110.90 GB | 16 GB, M2 or newer | Optional |
+The minimums are what the app allows. I test releases on a 16 GB M2 MacBook
+Air, so everything else comes from people's benchmarks. Images need an M2 or
+newer.
 
-Install sizes use decimal GB. Gemma and Qwen offer thinking on or off; GPT-OSS
-offers low, medium or high reasoning. MiniMax always reasons.
+## How TUFF compares
 
-These are catalog eligibility floors. This release's real-model validation
-uses a 16 GB M2 MacBook Air; it does not establish coverage on 8 GB Macs or
-other Apple Silicon generations. Image companions require M2 or newer.
+| | TUFF | [LM Studio](https://lmstudio.ai/docs/app) | [Ollama](https://ollama.com/blog/new-app) | [Colibrì](https://github.com/JustVugg/colibri) | [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Built only for Apple Silicon Macs | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Desktop chat app | ✅ | ✅ | ✅ | ◐ | ✅ |
+| Built-in web search in chat | ✅ | ❌ | ◐ | ❌ | ❌ |
+| Search your own folders from chat | ✅ | ◐ | ❌ | ❌ | ❌ |
+| Local OpenAI-compatible server | ✅ | ✅ | ✅ | ✅ | ◐ |
+| Command-line tools | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Dense models | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Own engine, not MLX or llama.cpp | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Streams MoE experts from disk | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Open-source desktop app | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Windows and Linux | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Models | 9 | GGUF / MLX catalog | Model library | 13 engines, mostly MoE | Gemma 26B |
 
-Auto chooses context and expert-cache settings within 75% of installed unified
-memory. It keeps the qualified cache count and raises it to the chunked-prefill
-minimum only when the estimate fits. The corrected GPT-OSS accounting can
-therefore select fewer slots than earlier releases. Manual settings are
-checked against the same estimate.
+✅ yes · ◐ partly · ❌ no. Checked against each project's docs on October 8, 2026.
 
-The estimate includes all layers' expert slots, context KV storage,
-chunk-dependent prefill scratch, sliding-window rings, and a conservative
-allocation-growth reserve. It is an admission estimate, not measured resident
-memory or a guarantee against memory pressure. Historical working-set
-allowances remain in the baseline. Physical residency can differ because
-weights and expert reads are file-backed.
+- **Web search:** TUFF uses DuckDuckGo with no account, or Brave or Tavily
+  with your key. Ollama's [web search](https://docs.ollama.com/capabilities/web-search)
+  is a hosted API that needs an Ollama account. LM Studio has none built in,
+  but you can add it with MCP servers.
+- **Folders:** LM Studio can chat with documents you attach, which covers
+  some of the same ground.
+- **Streaming** means a fixed-size expert cache, not OS paging or CPU
+  offload. LM Studio and Ollama handle big models differently, and have far
+  bigger model libraries.
+- **Colibrì** also streams experts and runs Flash Next, on more platforms.
+  **TurboFieldfare** is where TUFF started.
 
-Prefill groups prompt tokens into chunks and uses batched projections where
-supported. The recommended chunk is 256 for dense models, 512 for MoE models
-whose install fits installed memory, and 2,048 for larger MoE models (1,024
-below 16 GB). Larger chunks consume more scratch and ring memory. CLI callers
-can choose an explicit chunk size; the server uses the recommended one.
+Other engines run models bigger than RAM too. I haven't benchmarked them
+against TUFF on the same Mac, so this compares features, not speed.
 
-**Bypass model restrictions** permits loading beyond the eligibility and
-estimated-memory gates. Such settings may swap or fail to allocate.
+## Command line
 
-### Benchmarks
-
-Release measurements and their limits are in the
-[model validation report](docs/MODEL_VALIDATION.md), and what each release was
-checked against is in [release evidence](docs/RELEASE_EVIDENCE.md).
-
-Measured October 1, 2026 with the TUFF 6.1.0 package on a 16 GB M2 MacBook
-Air, macOS 26.6.2.
-Each run starts a fresh packaged CLI process with a 4,096-token context and
-seed 20260721. The output cap is 128 tokens, or 256 for MiniMax. Every text
-attempt answered Paris and stopped at EOS or end of turn. These short responses
-are correctness smoke checks, not model-quality or sustained-throughput scores.
-
-| Model | All eligible decode runs (tok/s) | Median | Min..max | Spread | Prefill median |
-| --- | --- | ---: | --- | ---: | ---: |
-| Qwen3.8 Flash Next 4-bit | 1.711, 1.681, 0.604 | 1.681 | 0.604..1.711 | 1.107 | 28.46 s |
-| Gemma 4 26B-A4B IT | 8.322, 7.428, 6.903 | 7.428 | 6.903..8.322 | 1.419 | 4.52 s |
-| Gemma 4 E2B IT | 52.007, 53.591, 52.703 | 52.703 | 52.007..53.591 | 1.584 | 0.42 s |
-| Gemma 4 E4B IT | 31.121, 30.987, 30.967 | 30.987 | 30.967..31.121 | 0.154 | 0.71 s |
-| Gemma 4 12B IT QAT | 7.267, 7.475, 7.473 | 7.473 | 7.267..7.475 | 0.208 | 4.58 s |
-| Qwen3.6 35B-A3B | 8.923, 8.481, 7.283 | 8.481 | 7.283..8.923 | 1.640 | 6.38 s |
-| GPT-OSS 20B | 4.670, 5.053, 4.904 | 4.904 | 4.670..5.053 | 0.383 | 5.42 s |
-| GPT-OSS 120B | 1.956, 1.952, 1.959 | 1.956 | 1.952..1.959 | 0.007 | 64.39 s |
-| MiniMax M2.7 4-bit | 0.374, 0.234, 0.223 | 0.234 | 0.223..0.374 | 0.151 | 52.64 s |
-
-Four attempts crossed recorded system sleep. Their raw observations remain
-marked in the report; four awake replacements supply three eligible timings
-per model above. MiniMax and GPT-OSS rates include native reasoning tokens.
-
-Decode excludes load and prefill. Prefill includes first-use expert checks;
-fresh processes do not guarantee a cold filesystem cache. Available pressure,
-swap, thermal and power observations are in the report. The cause of timing
-variation was not measured, and these results do not establish a speedup.
-
-The measurement tools and how to report results are described in
-[CONTRIBUTING.md](CONTRIBUTING.md#performance-results).
-
-### Bug reports and recovery
-
-Help > Report a Bug opens the GitHub bug form with your version, Mac and model
-filled in, and previews an optional summary of system details, settings
-and generation timing. Check for Recovery Update looks for a newer signed
-recovery and protects local data formats. See [recovery help](docs/RELEASE_RECOVERY.md).
-
-## Images
-
-Each image companion is tied to its exact text checkpoint. TUFF rejects missing,
-corrupt or incompatible packs and never silently discards an image. Images
-remain available to follow-up turns until context trimming removes them.
-
-## Local server
-
-In a packaged app, enable **Background API** on the Server screen and allow its
-login item in macOS when requested. Choose the default model, port and unload
-delay, including immediately after the last response. Use the endpoint shown
-on the card with an OpenAI-compatible client. A `default` request selects the
-configured model; a catalog model ID selects another installed model. Active
-and queued requests keep the model loaded. The app can reclaim an idle API
-model's memory before loading a Chat model and reports when the API is busy.
-Chat and the Background API share one memory budget. A model with image
-support counts as the whole budget until its combined text and image peak is
-measured, so while Chat holds such a model the API answers requests with HTTP
-503 instead of loading a second one.
-
-![TUFF Server with the Background API listening and no model loaded](docs/assets/tuff-server.png)
-
-`tuff serve` runs the same server in the foreground, for clone builds or
-scripts. `default` means the model selected in the app unless you pass
-`--default-model`:
+The app includes the `tuff` command:
 
 ```sh
-tuff serve --default-model gemma4-e2b --unload-after 300 --port 8080
+tuff prompt "Explain mixture-of-experts models in two sentences."
+tuff bench --models gemma4,qwen36 --share
+tuff serve --port 8080
 ```
 
-From a clone, run `swift run -c release TUFFServer --models-root scratch`.
-Since TUFF 7.1 there is one routed server; `tuff serve --model` and the app's
-Start/Stop server are gone. The server grows each model's context to 16K (or 8K) and
-enables batched expert prefill when the allocation estimate fits within 75% of
-the Mac's memory. Otherwise it retains the qualified catalog settings.
-`/v1/models` reports the actual context and output limits for client discovery.
+`tuff serve` runs the same server as the Background API. It only listens on
+your Mac and has no authentication. [OMP setup](docs/OMP.md) is a tested
+coding-agent config.
 
-OMP can use every installed model through an `openai-completions` provider
-with `openai-models-list` discovery. Gemma tool declarations retain mixed-type
-schema unions, including OMP's task output schema. OMP approves and executes
-tools; TUFF returns native MiniMax and GPT-OSS calls as structured tool calls.
-Larger models still depend on the
-Mac's available memory and can process prompts slowly.
-See [OMP setup](docs/OMP.md) for discovery, output limits and native thinking
-settings.
+## Build from source
 
-The server provides `GET /health`, `GET /v1/models`, and
-`POST /v1/chat/completions`.
-Chat Completions supports JSON, streaming SSE, model-aware reasoning,
-function-tool declarations, prompt reuse, and installed image companions.
-Clients approve and execute tool calls themselves.
-
-The server binds to `127.0.0.1` and has no authentication or TLS. Keep it local.
-Point your client at `http://127.0.0.1:<port>/v1`; `/v1/models` supplies the model
-identifier. Unknown request fields return `unknown_parameter`; recognized but
-unsupported values return `unsupported_value`. `chat_template_kwargs` may
-carry only `enable_thinking` and `preserve_thinking`. Accepted metadata fields are
-ignored, and `null` fields count as absent.
-
-## Build it yourself
-
-Building requires Xcode with Swift 6.2 or newer and Metal 3.2 support.
+You need Xcode with Swift 6.2 or newer (I build with Xcode 27).
 
 ```sh
 git clone https://github.com/rexmhall09/TUFF.git
@@ -259,85 +145,23 @@ swift build -c release
 .build/release/TUFF
 ```
 
-Build the complete arm64 app, ZIP and checksum with:
+Clone builds keep models and chats in `scratch/`, so they don't touch an
+installed copy. `Scripts/test.sh` runs the tests; none need a model.
+[How TUFF works](docs/HOW_TUFF_WORKS.md) explains the engine and maps the
+code.
 
-```sh
-Scripts/package_app.sh 7.3.0 dist/v7.3.0
-```
+## Contributing
 
-The version must match `Sources/TUFFModelCatalog/TUFFVersion.swift`.
+Help is welcome, and a lot of it needs no code. Running a benchmark on your
+Mac is the easiest place to start. There are also
+[good first issues](https://github.com/rexmhall09/TUFF/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22),
+a [roadmap](docs/ROADMAP.md), and [Discussions](https://github.com/rexmhall09/TUFF/discussions)
+for questions and ideas. [CONTRIBUTING.md](CONTRIBUTING.md) explains the rest.
 
-The packaged app stores models in
-`~/Library/Application Support/TUFF/Models` and chats in `Chats/` beside them.
-Clone builds use `scratch/`. Existing compatible `.gturbo` v1 packs remain
-readable. Model weights are not included in releases.
+## Credits
 
-### Command-line tools
-
-The packaged app contains `tuff`, `TUFFCLI`, `TUFFServer`, and `TUFFRepack` in
-`Contents/Resources/bin`. `tuff` uses the selected app model and its defaults:
-
-```sh
-tuff load gemma4
-tuff prompt "Explain bounded expert streaming."
-tuff serve --port 8080
-```
-
-`tuff load` opens the containing app and loads an installed model. `prompt`
-accepts another catalog selector or model path through `--model`; `serve`
-serves every installed model.
-For direct inference or installation:
-
-```sh
-swift run -c release TUFFCLI \
-  --model scratch/gpt-oss-20b.gturbo \
-  --chat-prompt "Explain bounded expert streaming." \
-  --reasoning low --max-new 256
-
-swift run -c release TUFFRepack \
-  --model gpt-oss-20b --output scratch/gpt-oss-20b.gturbo
-```
-
-Installer selectors are `gemma4-e2b`, `gemma4-e4b`, `gemma4-12b-qat`, `gemma4`,
-`qwen36`, `gpt-oss-20b`, `gpt-oss-120b`, `minimax-m2.7`, and
-`qwen38-flash-next`. Downloads preserve verified ranges for `--resume`;
-`--discard-partial` removes saved download state.
-
-## Runtime and tests
-
-A shared registry defines checkpoint identity, architecture, installation,
-hardware requirements and defaults. Runtime paths specialize attention,
-quantization, routing, prompts and memory for each family. Gemma, Qwen and
-MiniMax use affine INT4; GPT-OSS uses BF16 shared projections, MXFP4 experts,
-and FP32 residuals. The compatible `.gturbo` minor extensions describe these
-layouts; runtimes reject unsupported features.
-
-On macOS 26, TUFF sets `AGX_RELAX_CDM_CTXSTORE_TIMEOUT=1` before creating a
-Metal device to relax the driver's interactivity deadline for long dispatches.
-An existing environment value is preserved.
-
-```sh
-Scripts/test.sh
-Scripts/check.sh --source-only
-```
-
-The serial suite covers independent kernel references, toy forward and prefill
-paths, format validation, tokenizer and prompt goldens, installation failures,
-chat persistence, server behavior and update configuration. Run real-model
-checks separately, with one model process at a time. Passing model-free tests
-alone does not qualify a checkpoint.
-
-## Contributing and credit
-
-Code, design, documentation, tests and bug reports are welcome. Open a pull
-request from a fork; GitHub runs the model-free checks and I review and merge.
-[CONTRIBUTING.md](CONTRIBUTING.md) has the details. Use whichever tools you
-like, AI included, as long as you can stand behind the result. I use AI while
-building TUFF and take responsibility for the work I publish.
-
-TUFF began as a fork of
-[drumih/turbo-fieldfare](https://github.com/drumih/turbo-fieldfare) by Andrey
-Mikhaylov. It established the original Gemma runtime and expert streaming.
-TUFF source and documentation use the [Apache License 2.0](LICENSE).
-Model weights retain their own terms; dependency and font credits are in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+TUFF began as a fork of [drumih/turbo-fieldfare](https://github.com/drumih/turbo-fieldfare)
+by Andrey Mikhaylov, which built the original Gemma runtime and expert
+streaming. TUFF is [Apache 2.0](LICENSE). Model weights keep their own terms;
+other credits are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Security issues go to [private reporting](SECURITY.md).

@@ -3,6 +3,7 @@ import ServiceManagement
 import Testing
 import TUFFModelCatalog
 import TUFFAppCore
+import TUFFAppResearch
 @testable import TUFFAppServer
 import TUFFAppUpdater
 @testable import TUFFMac
@@ -34,7 +35,9 @@ import SwiftUI
                 destination: destination,
                 model: model,
                 backgroundAPI: backgroundAPI,
-                updateController: updateController)
+                updateController: updateController,
+                research: Self.research(backgroundAPI),
+                benchmarks: BenchmarkController())
                 .frame(
                     width: AppWindowLayout.detailMinimumWidth,
                     height: AppWindowLayout.minimumHeight)
@@ -49,6 +52,17 @@ import SwiftUI
                 height: AppWindowLayout.minimumHeight))
             #expect(!data.isEmpty)
         }
+    }
+}
+
+extension AppWorkspaceSmokeTests {
+    /// Reports go to an empty temporary folder, so the Research screen renders
+    /// its first-use state rather than whatever this Mac has saved.
+    static func research(_ backgroundAPI: AppBackgroundAPIController) -> ResearchWorkspace {
+        ResearchWorkspace(
+            backgroundAPI: backgroundAPI,
+            reportsDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("TUFFWorkspaceSmoke-\(UUID().uuidString)", isDirectory: true))
     }
 }
 
@@ -77,7 +91,9 @@ extension AppWorkspaceSmokeTests {
             destination: .server,
             model: model,
             backgroundAPI: backgroundAPI,
-            updateController: AppUpdateController(infoDictionary: nil))
+            updateController: AppUpdateController(infoDictionary: nil),
+            research: Self.research(backgroundAPI),
+            benchmarks: BenchmarkController())
             .frame(
                 width: AppWindowLayout.detailMinimumWidth,
                 height: AppWindowLayout.minimumHeight)

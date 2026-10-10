@@ -130,6 +130,10 @@ public struct GFTokenizer: @unchecked Sendable {
     /// never use a BOS prefix (ChatML).
     private let bosPrefixID: Int32?
     private let gemmaSchemaTemplate: String?
+    private let memoizesToolTemplate: Bool
+    private let encodingCache = TokenizerEncodingCache()
+
+    var encodingCacheStatistics: TokenizerEncodingCache.Statistics { encodingCache.statistics }
 
     @usableFromInline
     let tokenizer: any Tokenizer
@@ -258,6 +262,7 @@ public struct GFTokenizer: @unchecked Sendable {
                 chatTemplate: String? = nil) throws {
         self.tokenizer = tokenizer
         gemmaSchemaTemplate = chatTemplate.flatMap(GemmaSchemaTemplate.extending)
+        memoizesToolTemplate = TokenizerEncodingCache.permitsTemplateMemoization(chatTemplate)
         self.decoding = try Self.verifyDecoderConfiguration(tokenizerData)
 
         // The same `added_tokens[special == true]` ID set the library's
@@ -523,7 +528,9 @@ public struct GFTokenizer: @unchecked Sendable {
     /// the same regardless of upstream defaults. ChatML has no BOS, so `addBOS`
     /// is a no-op for that dialect.
     public func encode(_ text: String, addBOS: Bool = true) -> [Int32] {
-        let base = tokenizer.encode(text: text, addSpecialTokens: false).map(Int32.init)
+        let base = encodingCache.value(for: TokenizerEncodingCache.textKey(text)) {
+            tokenizer.encode(text: text, addSpecialTokens: false).map(Int32.init)
+        }
         guard addBOS, let bosPrefixID else { return base }
         return [bosPrefixID] + base
     }
@@ -709,6 +716,26 @@ public struct GFTokenizer: @unchecked Sendable {
             addBOS: false)
     }
 
+    /// The tokens a Harmony prompt opens with before the conversation: the
+    /// system message and the developer message holding the instructions and
+    /// tools. Every request with the same instructions, tools, effort and date
+    /// starts with exactly these, whatever the conversation says.
+    public func harmonyInstructionPrefix(
+        messages: [Message],
+        tools: [FunctionDefinition],
+        reasoningEffort: GPTOSSReasoningEffort,
+        currentDate: String
+    ) throws -> [Int32] {
+        let leading = messages.first.map {
+            $0.role == .system || $0.role == .developer ? [$0] : []
+        } ?? []
+        return encode(
+            try HarmonyPromptRenderer().render(
+                messages: leading, tools: tools, reasoningEffort: reasoningEffort,
+                currentDate: currentDate, addGenerationPrompt: false),
+            addBOS: false)
+    }
+
     private func gemmaChatTemplate(
         _ messages: [Message],
         modelVariant: ModelVariant?,
@@ -851,7 +878,8 @@ public struct GFTokenizer: @unchecked Sendable {
     public func encodeToolChat(messages: [Message],
                                tools: [FunctionDefinition],
                                reasoning: ChatReasoning = .off,
-                               preserveThinking: Bool) throws -> [Int32] {
+                               preserveThinking: Bool,
+                               addGenerationPrompt: Bool = true) throws -> [Int32] {
         guard dialect != .harmony else {
             throw GFTokenizerError.unsupportedForDialect(
                 "binary reasoning control for Harmony tool chat")
@@ -900,10 +928,15 @@ public struct GFTokenizer: @unchecked Sendable {
                 ] as [String: any Sendable],
             ]
         }
-        return try tokenizer.applyChatTemplate(
+        let identity = ToolChatEncodingIdentity(
+            messages: messages, tools: tools, reasoning: reasoning,
+            preserveThinking: preserveThinking, addGenerationPrompt: addGenerationPrompt,
+            extendsSchema: extendsSchema)
+        return try encodingCache.value(for: memoizesToolTemplate ? identity.key : nil) {
+            try tokenizer.applyChatTemplate(
             messages: upstreamMessages,
             chatTemplate: extendsSchema ? gemmaSchemaTemplate.map(ChatTemplateArgument.literal) : nil,
-            addGenerationPrompt: true,
+            addGenerationPrompt: addGenerationPrompt,
             truncation: false,
             maxLength: nil,
             tools: upstreamTools,
@@ -911,7 +944,8 @@ public struct GFTokenizer: @unchecked Sendable {
                 "enable_thinking": reasoning == .on,
                 "preserve_thinking": preserveThinking,
             ]
-        ).map(Int32.init)
+            ).map(Int32.init)
+        }
     }
 
     public func encodeTextContinuation(
@@ -1069,14 +1103,28 @@ public struct GFTokenizer: @unchecked Sendable {
         assistant: Message,
         incomingMessages: [Message],
         tools: [FunctionDefinition],
-        reasoning: ChatReasoning = .off
+        reasoning: ChatReasoning = .off,
+        preserveThinking: Bool = false,
+        reasoningEffort: GPTOSSReasoningEffort? = nil,
+        harmonyCurrentDate: String? = nil
     ) throws -> [Int32] {
-        // The ChatML template's `<think>` stripping depends on each assistant
-        // turn's position relative to the last user query, so a re-rendered
-        // prefix is not guaranteed to be a token prefix of the full render.
-        // Callers (ServerPromptCache) fall back to prefix matching.
-        guard dialect == .gemma else {
-            throw GFTokenizerError.unsupportedForDialect("tool-result KV continuation")
+        switch dialect {
+        case .gemma:
+            break
+        case .chatml, .minimax:
+            return try encodeTaggedToolResultContinuation(
+                cachedMessages: cachedMessages, assistant: assistant,
+                incomingMessages: incomingMessages, tools: tools,
+                reasoning: reasoning, preserveThinking: preserveThinking)
+        case .harmony:
+            guard let reasoningEffort, let harmonyCurrentDate else {
+                throw GFTokenizerError.invalidChatTemplate(
+                    "Harmony tool-result continuation needs its reasoning effort and date")
+            }
+            return try encodeHarmonyToolResultContinuation(
+                cachedMessages: cachedMessages, assistant: assistant,
+                incomingMessages: incomingMessages, tools: tools,
+                reasoningEffort: reasoningEffort, currentDate: harmonyCurrentDate)
         }
         // Positional disambiguation is safe only when both renders share the
         // exact leading conversation. Otherwise the same token offset can name
@@ -1094,19 +1142,20 @@ public struct GFTokenizer: @unchecked Sendable {
               incomingAssistant.toolCalls == assistant.toolCalls,
               incomingAssistant.toolCallID == assistant.toolCallID,
               incomingAssistant.name == assistant.name,
-              (incomingAssistant.content ?? "").isEmpty,
-              (assistant.content ?? "").isEmpty else {
+              (incomingAssistant.content ?? "") == (assistant.content ?? "") else {
             throw GFTokenizerError.invalidChatTemplate(
                 "incoming tool-result history does not contain the cached assistant call")
         }
         let prefix = try encodeToolChat(
             messages: cachedMessages + [assistant],
             tools: tools,
-            reasoning: reasoning)
+            reasoning: reasoning,
+            preserveThinking: preserveThinking)
         let full = try encodeToolChat(
             messages: incomingMessages,
             tools: tools,
-            reasoning: reasoning)
+            reasoning: reasoning,
+            preserveThinking: preserveThinking)
         let callCount = assistant.toolCalls.count
         let starts = prefix.indices.filter { prefix[$0] == toolCallStartID }
         guard callCount > 0, starts.count >= callCount,
@@ -1143,6 +1192,123 @@ public struct GFTokenizer: @unchecked Sendable {
                 "tool-result continuation does not begin at the KV boundary")
         }
         return suffix
+    }
+}
+
+extension GFTokenizer {
+    /// The tool-result bridge for ChatML (Qwen) and MiniMax, whose assistant
+    /// turn ends with an end-of-turn token rather than Gemma's in-turn tool
+    /// response marker.
+    ///
+    /// The cached KV holds the tokens the model generated up to, but not
+    /// including, that end-of-turn token. The bridge is the full render of
+    /// the incoming conversation from that token on. It is located by
+    /// rendering the cached conversation plus the assistant turn without a
+    /// generation prompt and requiring the full render to agree with it up to
+    /// and including the closing token. Inside one user turn the templates'
+    /// last-query position does not move, so the assistant turn's reasoning
+    /// and calls render the same way in both, and any disagreement means the
+    /// boundary cannot be trusted.
+    func encodeTaggedToolResultContinuation(
+        cachedMessages: [Message],
+        assistant: Message,
+        incomingMessages: [Message],
+        tools: [FunctionDefinition],
+        reasoning: ChatReasoning,
+        preserveThinking: Bool
+    ) throws -> [Int32] {
+        guard incomingMessages.count > cachedMessages.count + 1,
+              incomingMessages.prefix(cachedMessages.count).elementsEqual(cachedMessages) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "incoming tool-result history does not extend the cached conversation")
+        }
+        let incomingAssistant = incomingMessages[cachedMessages.count]
+        guard incomingAssistant.role == .assistant, assistant.role == .assistant,
+              !assistant.toolCalls.isEmpty,
+              incomingAssistant.toolCalls == assistant.toolCalls,
+              (incomingAssistant.content ?? "") == (assistant.content ?? ""),
+              incomingMessages.dropFirst(cachedMessages.count + 1).allSatisfy({ $0.role == .tool }) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "incoming tool-result history does not contain the cached assistant call")
+        }
+        // The cached assistant's own reasoning is what the KV holds; render it
+        // into both sides so they agree on what precedes the boundary.
+        var renderedIncoming = incomingMessages
+        renderedIncoming[cachedMessages.count] = assistant
+        let prefix = try encodeToolChat(
+            messages: cachedMessages + [assistant], tools: tools,
+            reasoning: reasoning, preserveThinking: preserveThinking,
+            addGenerationPrompt: false)
+        let full = try encodeToolChat(
+            messages: renderedIncoming, tools: tools,
+            reasoning: reasoning, preserveThinking: preserveThinking)
+        let boundaryID = dialect == .minimax ? eosID : endOfTurnID
+        guard let end = prefix.lastIndex(of: boundaryID),
+              full.count > end + 1,
+              full[...end].elementsEqual(prefix[...end]) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "tool-result continuation does not begin at the KV boundary")
+        }
+        return Array(full[end...])
+    }
+}
+
+extension GFTokenizer {
+    /// The tool-result bridge for GPT-OSS. A Harmony tool call ends with
+    /// `<|call|>`, which is also the stop token, so the cached KV holds what
+    /// the model generated up to that token and the bridge starts with it.
+    ///
+    /// Harmony keeps a tool call's analysis until a final answer follows it,
+    /// and a tool result never adds one, so the cached assistant renders the
+    /// same way with and without the results after it. The bridge is located
+    /// the same way as the tagged one: the full render must agree with the
+    /// cached conversation plus the assistant turn up to and including
+    /// `<|call|>`, and everything from there on is new.
+    func encodeHarmonyToolResultContinuation(
+        cachedMessages: [Message],
+        assistant: Message,
+        incomingMessages: [Message],
+        tools: [FunctionDefinition],
+        reasoningEffort: GPTOSSReasoningEffort,
+        currentDate: String
+    ) throws -> [Int32] {
+        guard incomingMessages.count == cachedMessages.count + 2,
+              incomingMessages.prefix(cachedMessages.count).elementsEqual(cachedMessages) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "incoming tool-result history does not extend the cached conversation")
+        }
+        let incomingAssistant = incomingMessages[cachedMessages.count]
+        guard incomingAssistant.role == .assistant, assistant.role == .assistant,
+              assistant.toolCalls.count == 1,
+              incomingAssistant.toolCalls == assistant.toolCalls,
+              (incomingAssistant.content ?? "") == (assistant.content ?? ""),
+              incomingMessages.last?.role == .tool else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "incoming tool-result history does not contain the cached assistant call")
+        }
+        var renderedIncoming = incomingMessages
+        renderedIncoming[cachedMessages.count] = assistant
+        let renderer = HarmonyPromptRenderer()
+        let prefix = encode(
+            try renderer.render(
+                messages: cachedMessages + [assistant], tools: tools,
+                reasoningEffort: reasoningEffort, currentDate: currentDate,
+                addGenerationPrompt: false),
+            addBOS: false)
+        let full = encode(
+            try renderer.render(
+                messages: renderedIncoming, tools: tools,
+                reasoningEffort: reasoningEffort, currentDate: currentDate),
+            addBOS: false)
+        guard let call = harmonyTokenIDs?.call,
+              let end = prefix.lastIndex(of: call),
+              end == prefix.count - 1,
+              full.count > end + 1,
+              full[...end].elementsEqual(prefix[...end]) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "tool-result continuation does not begin at the KV boundary")
+        }
+        return Array(full[end...])
     }
 }
 

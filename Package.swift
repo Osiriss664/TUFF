@@ -15,6 +15,7 @@ let package = Package(
         .executable(name: "TUFF", targets: ["TUFFMac"]),
         .executable(name: "TUFFDecodeService", targets: ["TUFFDecodeService"]),
         .executable(name: "TUFFServer", targets: ["TUFFServer"]),
+        .executable(name: "TUFFResearch", targets: ["TUFFResearch"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -99,10 +100,16 @@ let package = Package(
             dependencies: ["TUFFEngine"],
             path: "Sources/TUFFDecodeProtocol"
         ),
+        .target(
+            name: "TUFFDecodeServiceCore",
+            dependencies: ["TUFFAppCore", "TUFFDecodeProtocol"],
+            path: "Sources/TUFFDecodeService",
+            exclude: ["Command"]
+        ),
         .executableTarget(
             name: "TUFFDecodeService",
-            dependencies: ["TUFFAppCore", "TUFFDecodeProtocol"],
-            path: "Sources/TUFFDecodeService"
+            dependencies: ["TUFFDecodeServiceCore"],
+            path: "Sources/TUFFDecodeService/Command"
         ),
         .target(
             name: "TUFFServerCore",
@@ -141,12 +148,32 @@ let package = Package(
                 "TUFFAppCore",
                 "TUFFAppServer",
                 "TUFFAppUpdater",
+                "TUFFAppResearch",
                 "TUFFMacPresentation",
+                "TUFFResearchCore",
+                "TUFFCLICore",
+                "TUFFDecodeServiceCore",
+                "TUFFServerCore",
             ],
             path: "Sources/TUFFApp/Mac",
             resources: [
                 .copy("Resources/tuff-app-icon.png"),
             ]
+        ),
+        .target(
+            name: "TUFFResearchCore",
+            dependencies: ["TUFFModelCatalog"],
+            path: "Sources/TUFFResearch/Core"
+        ),
+        .executableTarget(
+            name: "TUFFResearch",
+            dependencies: ["TUFFResearchCore"],
+            path: "Sources/TUFFResearch/Command"
+        ),
+        .target(
+            name: "TUFFAppResearch",
+            dependencies: ["TUFFModelCatalog", "TUFFResearchCore", "TUFFAppServer"],
+            path: "Sources/TUFFApp/Research"
         ),
         .target(
             name: "TUFFValidationSupport",
@@ -208,7 +235,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TUFFDecodeServiceTests",
-            dependencies: ["TUFFDecodeService", "TUFFAppCore", "TUFFDecodeProtocol"],
+            dependencies: ["TUFFDecodeServiceCore", "TUFFAppCore", "TUFFDecodeProtocol"],
             path: "Tests/TUFFDecodeService"
         ),
         .testTarget(
@@ -218,6 +245,7 @@ let package = Package(
                 "TUFFAppCore",
                 "TUFFAppServer",
                 "TUFFAppUpdater",
+                "TUFFAppResearch",
                 "TUFFMac",
                 "TUFFMacPresentation",
                 .product(name: "SwiftMath", package: "SwiftMath"),
@@ -240,6 +268,16 @@ let package = Package(
                 "TUFFModelCatalog",
             ],
             path: "Tests/TUFFAppServer"
+        ),
+        .testTarget(
+            name: "TUFFResearchTests",
+            dependencies: ["TUFFResearchCore"],
+            path: "Tests/TUFFResearch"
+        ),
+        .testTarget(
+            name: "TUFFAppResearchTests",
+            dependencies: ["TUFFAppResearch", "TUFFAppServer", "TUFFResearchCore"],
+            path: "Tests/TUFFApp/Research"
         ),
         .testTarget(
             name: "TUFFAppUpdaterTests",

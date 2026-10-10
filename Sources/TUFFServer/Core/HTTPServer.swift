@@ -59,8 +59,9 @@ public actor TUFFHTTPServer {
             .childChannelInitializer { channel in
                 childChannels.insert(channel)
                 do {
-                    try channel.pipeline.syncOperations.addHandler(
-                        IdleStateHandler(readTimeout: idleTimeout))
+                    try channel.pipeline.syncOperations.addHandlers(
+                        IdleStateHandler(readTimeout: idleTimeout),
+                        ClientHangUpWatcher())
                 } catch {
                     return channel.eventLoop.makeFailedFuture(error)
                 }
@@ -145,6 +146,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let attachmentRoot: URL
     private var bodyParser: StreamingChatRequestBody?
     private var bodyError: (any Error)?
+    private var requestArrival = DispatchTime.now().uptimeNanoseconds
     private var receivedBodyBytes = 0
     /// Past the wire cap the drain toward `.end` is unbounded - a chunked
     /// stream may never send one - so the request is answered immediately
@@ -153,6 +155,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     /// Requests still producing an answer. A generation reads nothing for as
     /// long as it runs, so the idle timeout must not close under it.
     private var inFlightRequests = 0
+    private var errorAPI: InferenceAPI = .chat
     private var head: HTTPRequestHead?
     private var activeTask: Task<Void, Never>?
 
@@ -178,9 +181,61 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             .first.map(String.init) ?? head.uri
     }
 
+    /// Names this server answers to. It listens on 127.0.0.1 only, so a
+    /// request naming any other host came from a browser whose page pointed
+    /// its own domain at this Mac (DNS rebinding) and would otherwise be
+    /// allowed to read the answers. "localhost" and "[::1]" stay accepted for
+    /// clients configured with those names. A reverse proxy or tunnel in
+    /// front of the server must pass the original Host through.
+    static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "[::1]"]
+
+    /// Whether a request may be served: its Host, when present, names this
+    /// Mac's loopback address, and any Origin is a loopback web page. A
+    /// request without Host (HTTP/1.0) cannot come from a browser and passes.
+    static func acceptsCaller(_ head: HTTPRequestHead) -> Bool {
+        let hosts = head.headers["host"]
+        guard hosts.count <= 1 else { return false }
+        if let host = hosts.first, !isLoopback(authority: host) { return false }
+        return head.headers["origin"].allSatisfy(isLoopback(origin:))
+    }
+
+    /// `127.0.0.1`, `localhost` or `[::1]`, with an optional port.
+    static func isLoopback(authority: String) -> Bool {
+        var name = Substring(authority.trimmingCharacters(in: .whitespaces).lowercased())
+        if name.hasPrefix("[") {
+            guard let close = name.firstIndex(of: "]") else { return false }
+            let port = name[name.index(after: close)...]
+            guard port.isEmpty || isPort(port) else { return false }
+            name = name[...close]
+        } else if let colon = name.firstIndex(of: ":") {
+            guard isPort(name[colon...]) else { return false }
+            name = name[..<colon]
+        }
+        // "localhost." is the same name written as fully qualified.
+        if name.count > 1, name.hasSuffix(".") { name = name.dropLast() }
+        return loopbackHosts.contains(String(name))
+    }
+
+    /// An `http` or `https` origin on a loopback host. `null`, other schemes
+    /// and every other site are refused.
+    static func isLoopback(origin: String) -> Bool {
+        let lowered = origin.trimmingCharacters(in: .whitespaces).lowercased()
+        for scheme in ["http://", "https://"] where lowered.hasPrefix(scheme) {
+            return isLoopback(authority: String(lowered.dropFirst(scheme.count)))
+        }
+        return false
+    }
+
+    /// A colon followed by one to five digits.
+    private static func isPort(_ text: Substring) -> Bool {
+        let digits = text.dropFirst()
+        return text.first == ":" && (1...5).contains(digits.count)
+            && digits.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     static func carriesChatBody(_ head: HTTPRequestHead) -> Bool {
         head.method == .POST
-            && requestPath(head) == chatCompletionsPath
+            && InferenceAPI.forPath(requestPath(head)) != nil
             && head.headers.first(name: "content-type")?
                 .lowercased().hasPrefix("application/json") == true
     }
@@ -190,6 +245,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         case .head(let head):
             guard !discardingUntilClose else { return }
             self.head = head
+            errorAPI = InferenceAPI.forPath(Self.requestPath(head)) ?? .chat
+            requestArrival = DispatchTime.now().uptimeNanoseconds
             // The parser stages inline images to disk, so it is created only
             // once the request is known to carry a chat body. A body sent
             // elsewhere is counted and dropped.
@@ -199,6 +256,15 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 : nil
             bodyError = nil
             receivedBodyBytes = 0
+            if !Self.acceptsCaller(head) {
+                // Answered at `.end`, like any other rejected body; nothing
+                // is parsed or staged meanwhile.
+                bodyParser = nil
+                bodyError = ServerRequestError.invalid(
+                    message: "this server only answers requests addressed to "
+                        + "127.0.0.1, localhost or [::1]",
+                    param: nil, code: "forbidden_host")
+            }
         case .body(var part):
             guard !discardingUntilClose else { return }
             receivedBodyBytes += part.readableBytes
@@ -295,7 +361,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             respondToControl(context, head: head, unload: false)
         case (.POST, ServerControl.unloadPath) where control != nil:
             respondToControl(context, head: head, unload: true)
-        case (.POST, "/v1/chat/completions"):
+        case (.POST, "/v1/chat/completions"), (.POST, "/v1/messages"), (.POST, "/v1/responses"):
             guard head.headers.first(name: "content-type")?
                 .lowercased().hasPrefix("application/json") == true else {
                 writeError(context, status: .unsupportedMediaType,
@@ -303,8 +369,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                                code: "unsupported_media_type"))
                 return
             }
-            handleCompletion(body: body, context: context)
-        case (_, "/health"), (_, "/v1/models"), (_, "/v1/chat/completions"),
+            handleCompletion(body: body, api: InferenceAPI.forPath(path)!, context: context)
+        case (_, "/health"), (_, "/v1/models"), (_, "/v1/chat/completions"), (_, "/v1/messages"), (_, "/v1/responses"),
              (_, ServerControl.statusPath) where control != nil,
              (_, ServerControl.unloadPath) where control != nil:
             writeError(context, status: .methodNotAllowed,
@@ -342,11 +408,13 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     }
 
     private func handleCompletion(body: ParsedChatRequestBody,
+                                  api: InferenceAPI,
                                   context: ChannelHandlerContext) {
         do {
-            let decoded = try JSONDecoder().decode(OpenAIChatRequest.self, from: body.json)
+            let decoded = try api.request(body.json)
             let target = try provider.route(decoded.model)
             let modelID = target.id
+            try api.validateNativeHistory(decoded, dialect: target.dialect)
             let request = try OpenAIRequestValidator.validate(
                 decoded,
                 modelID: target.requestedID,
@@ -360,11 +428,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                     message: "\(modelID) does not accept images on this Mac",
                     param: "messages", code: "image_input_unavailable")
             }
-            let responseID = "chatcmpl-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            let responseID = (api == .messages ? "msg_" : api == .responses ? "resp_" : "chatcmpl-") + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
             let created = Int(Date().timeIntervalSince1970)
+            let adapter = api == .chat ? nil : InferenceAdapterWire(api: api, id: responseID, model: modelID, created: created, dialect: target.dialect)
             let contextBox = SendableContext(context)
             let streamState = StreamState()
             let phaseState = RequestPhaseState()
+            let timings = ServerRequestTimings(arrival: requestArrival,
+                validated: DispatchTime.now().uptimeNanoseconds)
             let startStream: @Sendable () -> Void = {
                 guard request.stream,
                       streamState.start(eventLoop: contextBox.value.eventLoop,
@@ -372,11 +443,18 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                         ping: {
                           self.writeHeartbeat(contextBox.value)
                       }) else { return }
-                let future = self.beginStream(
-                    contextBox.value,
-                    self.chunk(model: modelID, id: responseID, created: created,
-                               delta: ["role": "assistant"],
-                               finishReason: nil))
+                let future: EventLoopFuture<Void>
+                if let adapter {
+                    // Messages needs the actual prompt count in message_start.
+                    // A queued stream can send comments until preparation finishes.
+                    future = self.beginAdapterStream(contextBox.value,
+                        frames: api == .messages ? [] : adapter.start())
+                } else {
+                    future = self.beginStream(
+                        contextBox.value,
+                        self.chunk(model: modelID, id: responseID, created: created,
+                                   delta: ["role": "assistant"], finishReason: nil))
+                }
                 streamState.setStartFuture(future)
             }
             let onQueued: @Sendable () -> Void = {
@@ -398,7 +476,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 let started = ContinuousClock.now
                 ServerLog.accepted(id: responseID, streaming: request.stream)
                 do {
-                    let completion = try await self.provider.run(
+                    var completion = try await self.provider.run(
                         target,
                         onQueued: onQueued,
                         prepare: { backend in
@@ -408,20 +486,40 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                     message: "The loaded model cannot accept images on this Mac",
                                     param: "messages", code: "image_input_unavailable")
                             }
+                            timings.preparing()
                             let prepared = try await backend.prepare(request)
+                            timings.prepared()
                             phaseState.set("prepared")
                             ServerLog.prepared(id: responseID,
                                                promptTokens: prepared.promptTokenCount)
                             return prepared
                         },
-                        operation: { backend, prepared in
+                        operation: { (backend: any ServerInferenceBackend, prepared: ServerPreparedRequest) in
                             try Task.checkCancellation()
                             startStream()
                             try await streamState.waitUntilStarted()
+                            if request.stream, let adapter, api == .messages {
+                                self.writeAdapterFrames(contextBox.value,
+                                    frames: adapter.start(promptTokens: prepared.promptTokenCount ?? 0))
+                            }
                             try Task.checkCancellation()
+                            timings.generating()
                             phaseState.set("generating")
                             ServerLog.generating(id: responseID)
                             return try await backend.generate(prepared) { event in
+                                if let adapter {
+                                    let frames = adapter.event(event)
+                                    if !frames.isEmpty { timings.visibleEvent() }
+                                    if request.stream {
+                                        self.writeAdapterFrames(contextBox.value, frames: frames)
+                                    }
+                                    return
+                                }
+                                switch event {
+                                case .content(let text), .reasoning(let text):
+                                    if !text.isEmpty { timings.visibleEvent() }
+                                case .toolCall: timings.visibleEvent()
+                                }
                                 guard request.stream else { return }
                                 switch event {
                                 case .content(let text):
@@ -429,6 +527,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                         contextBox.value,
                                         self.chunk(model: modelID, id: responseID, created: created,
                                                    delta: ["content": text],
+                                                   finishReason: nil))
+                                case .reasoning(let text):
+                                    self.writeStreamChunk(
+                                        contextBox.value,
+                                        self.chunk(model: modelID, id: responseID, created: created,
+                                                   delta: ["reasoning_content": text],
                                                    finishReason: nil))
                                 case .toolCall(let call):
                                     self.writeToolCall(contextBox.value,
@@ -440,17 +544,25 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                 }
                             }
                     })
+                    try adapter?.validateCompletion()
+                    completion.timingSeconds.merge(timings.snapshot(), uniquingKeysWith: { _, new in new })
                     ServerLog.completed(id: responseID,
                                         duration: started.duration(to: .now),
                                         completion: completion)
                     if request.stream {
                         streamState.stop()
-                        self.finishStream(contextBox.value,
-                                          model: modelID,
-                                          id: responseID,
-                                          created: created,
-                                          completion: completion,
-                                          includeUsage: request.includeUsage)
+                        if let adapter {
+                            self.writeAdapterFrames(contextBox.value, frames: adapter.finish(completion), end: true)
+                        } else {
+                            self.finishStream(contextBox.value,
+                                              model: modelID,
+                                              id: responseID,
+                                              created: created,
+                                              completion: completion,
+                                              includeUsage: request.includeUsage)
+                        }
+                    } else if let adapter {
+                        self.writeJSON(contextBox.value, status: .ok, object: try adapter.completed(completion))
                     } else {
                         self.writeCompletion(contextBox.value,
                                              model: modelID,
@@ -465,7 +577,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                           id: responseID,
                                           phase: phaseState.value,
                                           stream: streamState.isStarted,
-                                          started: started)
+                                          started: started,
+                                          adapter: adapter)
                 }
             }
         } catch let error as ServerRequestError {
@@ -495,6 +608,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         if !completion.toolCalls.isEmpty {
             message["tool_calls"] = completion.toolCalls.map(toolCallObject)
         }
+        if !completion.reasoning.isEmpty {
+            message["reasoning_content"] = completion.reasoning
+        }
         let object: [String: Any] = [
             "id": id,
             "object": "chat.completion",
@@ -506,8 +622,51 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "finish_reason": completion.finishReason,
             ]],
             "usage": usageObject(completion.usage),
+            "tuff_timings_seconds": completion.timingSeconds,
         ]
         writeJSON(context, status: .ok, object: object)
+    }
+
+    private func adapterBytes(_ frames: [AdapterSSEFrame]) -> Data {
+        var data = Data()
+        for frame in frames {
+            guard let json = try? JSONSerialization.data(withJSONObject: frame.object) else { continue }
+            data.append(contentsOf: "event: \(frame.event)\ndata: ".utf8)
+            data.append(json)
+            data.append(contentsOf: "\n\n".utf8)
+        }
+        return data
+    }
+
+    private func beginAdapterStream(_ context: ChannelHandlerContext,
+                                    frames: [AdapterSSEFrame]) -> EventLoopFuture<Void> {
+        let bytes = adapterBytes(frames)
+        let box = SendableContext(context)
+        let promise = context.eventLoop.makePromise(of: Void.self)
+        context.eventLoop.execute {
+            let headers = HTTPHeaders([("content-type", "text/event-stream"), ("cache-control", "no-cache"), ("connection", "keep-alive")])
+            box.value.write(self.wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+            var buffer = box.value.channel.allocator.buffer(capacity: bytes.count)
+            buffer.writeBytes(bytes)
+            box.value.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: promise)
+        }
+        return promise.futureResult
+    }
+
+    private func writeAdapterFrames(_ context: ChannelHandlerContext,
+                                    frames: [AdapterSSEFrame], end: Bool = false) {
+        let bytes = adapterBytes(frames)
+        let box = SendableContext(context)
+        context.eventLoop.execute {
+            guard box.value.channel.isActive else { return }
+            if !bytes.isEmpty {
+                var buffer = box.value.channel.allocator.buffer(capacity: bytes.count)
+                buffer.writeBytes(bytes)
+                box.value.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+            }
+            if end { box.value.write(self.wrapOutboundOut(.end(nil)), promise: nil) }
+            box.value.flush()
+        }
     }
 
     private func beginStream(
@@ -571,11 +730,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                               created: Int,
                               completion: ServerCompletion,
                               includeUsage: Bool) {
-        writeStreamChunk(
-            context,
-            chunk(model: modelID, id: id, created: created,
-                  delta: [:],
-                  finishReason: completion.finishReason))
+        var terminal = chunk(model: modelID, id: id, created: created,
+                             delta: [:], finishReason: completion.finishReason)
+        terminal["tuff_timings_seconds"] = completion.timingSeconds
+        writeStreamChunk(context, terminal)
         if includeUsage {
             writeStreamChunk(context, [
                 "id": id,
@@ -639,7 +797,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                   id: String,
                                   phase: String,
                                   stream: Bool,
-                                  started: ContinuousClock.Instant) {
+                                  started: ContinuousClock.Instant,
+                                  adapter: InferenceAdapterWire? = nil) {
         let envelope: OpenAIErrorEnvelope
         let status: HTTPResponseStatus
         if let requestError = error as? ServerRequestError {
@@ -662,11 +821,19 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             onRequestError(String(describing: error))
             ServerLog.failed(id: id, phase: phase, status: status.code, error: error)
         }
+        if stream, let adapter {
+            writeAdapterFrames(context, frames: adapter.error(envelope), end: true)
+            return
+        }
         if stream {
             finishStreamWithError(context, envelope: envelope)
             return
         }
-        writeError(context, status: status, envelope)
+        if adapter?.api == .messages {
+            writeJSON(context, status: status, object: ["type": "error", "error": ["type": status.code >= 500 ? "api_error" : envelope.error.type, "message": envelope.error.message]])
+        } else {
+            writeCodable(context, status: status, envelope)
+        }
     }
 
     private func finishStreamWithError(_ context: ChannelHandlerContext,
@@ -699,7 +866,16 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                             status: HTTPResponseStatus,
                             _ error: OpenAIErrorEnvelope,
                             closeAfter: Bool = false) {
-        writeCodable(context, status: status, error, closeAfter: closeAfter)
+        if errorAPI == .messages {
+            // The Messages API names a refused caller `permission_error`.
+            let type = status.code >= 500 ? "api_error"
+                : error.error.code == "forbidden_host" ? "permission_error" : error.error.type
+            let object: [String: Any] = ["type": "error", "error": ["type": type, "message": error.error.message]]
+            guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+            writeData(context, status: status, data: data, closeAfter: closeAfter)
+        } else {
+            writeCodable(context, status: status, error, closeAfter: closeAfter)
+        }
     }
 
     private func writeJSON(_ context: ChannelHandlerContext,
@@ -748,7 +924,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     }
 
     private func usageObject(_ usage: OpenAIUsage) -> [String: Any] {
-        [
+        var object: [String: Any] = [
             "prompt_tokens": usage.promptTokens,
             "completion_tokens": usage.completionTokens,
             "total_tokens": usage.totalTokens,
@@ -756,6 +932,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "cached_tokens": usage.promptTokensDetails.cachedTokens,
             ],
         ]
+        if let details = usage.completionTokensDetails {
+            object["completion_tokens_details"] = [
+                "reasoning_tokens": details.reasoningTokens,
+            ]
+        }
+        return object
     }
 
     private func toolCallObject(_ call: ParsedToolCall) -> [String: Any] {
@@ -805,6 +987,8 @@ private extension ServerRequestError {
             switch code {
             case "request_too_large", "image_too_large", "too_many_images":
                 .payloadTooLarge
+            case "forbidden_host":
+                .forbidden
             default:
                 .badRequest
             }
@@ -882,6 +1066,60 @@ private final class ChildChannelRegistry: Sendable {
 
     var count: Int {
         state.withLock { $0.channels.count }
+    }
+}
+
+/// NIO's HTTP pipeline handler stops reading the socket while a response is
+/// pending. A client that hangs up during a long non-streaming generation (a
+/// stopped research run, a cancelled request) then goes unnoticed: the
+/// hang-up is only seen once the reply is written, so the model generates to
+/// the end for nobody and the next request waits behind it. This handler sits
+/// below the HTTP handlers and keeps reading while a read is held back, so
+/// the hang-up closes the channel, which cancels the request. Bytes that
+/// arrive meanwhile go up as usual and the pipeline handler buffers them;
+/// past `unreadLimit` of them, reading waits for the pipeline again. A client
+/// that half-closes its side while waiting for a reply is now treated as
+/// gone, as half-closure is not allowed on these channels.
+final class ClientHangUpWatcher: ChannelDuplexHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = IOData
+    typealias OutboundOut = IOData
+
+    static let unreadLimit = 1 << 20
+
+    /// Whether a read passed through since the last read cycle ended.
+    private var readRequested = false
+    /// Whether this handler, not the pipeline, asked for the current read.
+    private var watching = false
+    private var bytesWhileWatching = 0
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        if watching {
+            bytesWhileWatching += unwrapInboundIn(data).readableBytes
+        }
+        context.fireChannelRead(data)
+    }
+
+    func channelReadComplete(context: ChannelHandlerContext) {
+        readRequested = false
+        context.fireChannelReadComplete()
+        // With autoRead, the channel asks for the next read right after this
+        // event. If the pipeline held it back, read anyway.
+        let box = SendableContext(context)
+        context.eventLoop.execute {
+            guard !self.readRequested, box.value.channel.isActive,
+                  self.bytesWhileWatching < Self.unreadLimit else { return }
+            self.watching = true
+            box.value.read()
+        }
+    }
+
+    func read(context: ChannelHandlerContext) {
+        readRequested = true
+        watching = false
+        bytesWhileWatching = 0
+        context.read()
     }
 }
 

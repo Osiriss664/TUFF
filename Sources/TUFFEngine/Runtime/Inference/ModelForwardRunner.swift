@@ -226,6 +226,10 @@ public final class ModelForwardRunner: ChunkedPrefillRunner,
         }
     }
 
+    func selectHead(pureGreedy: Bool) {
+        if case .affine(let runner) = backend { runner.selectHead(pureGreedy: pureGreedy) }
+    }
+
     public var totalIoNanos: UInt64 {
         switch backend {
         case .affine(let runner): return runner.totalIoNanos
@@ -353,5 +357,49 @@ public final class ModelForwardRunner: ChunkedPrefillRunner,
         case .affine(let runner): return runner.totalRDAdviseSkipped
         case .gptOss: return 0
         }
+    }
+}
+
+extension ModelForwardRunner: StateSnapshottingRunner {
+    public var stateSnapshotByteEstimate: Int? {
+        switch backend {
+        case .affine(let runner): return runner.stateSnapshotByteEstimate
+        case .gptOss(let runner): return runner.stateSnapshotByteEstimate
+        }
+    }
+
+    public func captureState() throws -> RunnerStateSnapshot {
+        switch backend {
+        case .affine(let runner): return try runner.captureState()
+        case .gptOss(let runner): return try runner.captureState()
+        }
+    }
+
+    public func restoreState(_ snapshot: RunnerStateSnapshot) throws {
+        switch backend {
+        case .affine(let runner): try runner.restoreState(snapshot)
+        case .gptOss(let runner): try runner.restoreState(snapshot)
+        }
+    }
+}
+
+extension ModelForwardRunner: PrefixCheckpointingRunner {
+    public var supportsPrefixCheckpoints: Bool {
+        if case .gptOss = backend { return true }
+        return false
+    }
+
+    public func capturePrefixCheckpoint() throws -> RunnerStateSnapshot {
+        guard case .gptOss(let runner) = backend else {
+            throw RunnerStateSnapshotError.unsupported("prefix checkpoints are GPT-OSS only")
+        }
+        return try runner.capturePrefixCheckpoint()
+    }
+
+    public func rewind(to checkpoint: RunnerStateSnapshot) throws {
+        guard case .gptOss(let runner) = backend else {
+            throw RunnerStateSnapshotError.unsupported("prefix checkpoints are GPT-OSS only")
+        }
+        try runner.rewind(to: checkpoint)
     }
 }

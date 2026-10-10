@@ -68,6 +68,7 @@ private actor ContentAndToolBackend: ServerInferenceBackend {
         onEvent(.toolCall(call))
         return ServerCompletion(
             content: content,
+            reasoning: "The user wants the file.",
             toolCalls: [call],
             finishReason: "tool_calls",
             usage: OpenAIUsage(promptTokens: 3, completionTokens: 8, totalTokens: 11))
@@ -299,6 +300,9 @@ struct HTTPServerTests {
         let choices = try #require(object["choices"] as? [[String: Any]])
         let message = try #require(choices[0]["message"] as? [String: Any])
         #expect(message["content"] as? String == "hello")
+        let timings = try #require(object["tuff_timings_seconds"] as? [String: Double])
+        #expect(timings["time_to_first_event"] != nil)
+        #expect(timings.values.allSatisfy { $0.isFinite && $0 >= 0 })
         let usage = try #require(object["usage"] as? [String: Any])
         let details = try #require(usage["prompt_tokens_details"] as? [String: Any])
         #expect(details["cached_tokens"] as? Int == 0)
@@ -330,6 +334,16 @@ struct HTTPServerTests {
         #expect(text.contains(#""prompt_tokens":3"#))
         #expect(text.contains(#""cached_tokens":0"#))
         #expect(text.hasSuffix("data: [DONE]\n\n"))
+        let chunks = try text.components(separatedBy: "\n\n").compactMap { line -> [String: Any]? in
+            guard line.hasPrefix("data: {"), let data = line.dropFirst(6).data(using: .utf8) else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        let timingChunks = chunks.filter { $0["tuff_timings_seconds"] != nil }
+        #expect(timingChunks.count == 1)
+        let timings = try #require(timingChunks.first?["tuff_timings_seconds"] as? [String: Double])
+        #expect(timings["time_to_first_event"] != nil)
+        let choices = try #require(timingChunks.first?["choices"] as? [[String: Any]])
+        #expect(choices.first?["finish_reason"] as? String == "stop")
 
         try await server.shutdown()
     }
@@ -680,6 +694,42 @@ struct HTTPServerTests {
         #expect(await !server.hasActiveRequest)
     }
 
+    @Test func clientClosingDuringNonStreamingGenerationCancelsIt() async throws {
+        // A plain close (FIN, as URLSession sends when a task is cancelled),
+        // while the response is pending and the pipeline holds reads back.
+        let backend = CancellableServerBackend()
+        let server = TUFFHTTPServer(
+            modelID: "test-model",
+            queueLimit: 1,
+            backend: backend)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let socket = try connectedSocket(port: port)
+        let body = #"{"model":"test-model","messages":[{"role":"user","content":"wait"}],"stream":false}"#
+        try writeAll(socket: socket, text: httpRequest(
+            port: port, body: body, connection: "keep-alive"))
+
+        let startDeadline = ContinuousClock.now + .seconds(2)
+        while await backend.startedCount == 0, ContinuousClock.now < startDeadline {
+            await Task.yield()
+        }
+        #expect(await backend.startedCount == 1)
+        Darwin.close(socket)
+
+        let cancelDeadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < cancelDeadline {
+            let cancelled = await backend.cancellationCount
+            let open = await server.acceptedConnectionCount
+            if cancelled == 1, open == 0 { break }
+            await Task.yield()
+        }
+        #expect(await backend.cancellationCount == 1)
+        #expect(await server.acceptedConnectionCount == 0)
+
+        try await server.shutdown()
+        #expect(await !server.hasActiveRequest)
+    }
+
     @Test func shutdownDuringPreparationNeverStartsGeneration() async throws {
         let backend = CancellationIgnoringPreparationBackend()
         let server = TUFFHTTPServer(
@@ -764,6 +814,7 @@ struct HTTPServerTests {
         let choices = try #require(object["choices"] as? [[String: Any]])
         let message = try #require(choices[0]["message"] as? [String: Any])
         #expect(message["content"] as? String == "I will read it.")
+        #expect(message["reasoning_content"] as? String == "The user wants the file.")
         #expect((message["tool_calls"] as? [[String: Any]])?.count == 1)
         #expect(choices[0]["finish_reason"] as? String == "tool_calls")
 
@@ -924,7 +975,7 @@ struct HTTPServerTests {
 
 }
 
-private enum RawSocketError: Error {
+enum RawSocketError: Error {
     case systemCall(String, Int32)
     case timeout
 }

@@ -1,0 +1,1209 @@
+import Darwin
+import Foundation
+import Testing
+@testable import TUFFAppResearch
+import TUFFAppServer
+@testable import TUFFResearchCore
+
+@Suite struct ResearchAnswerFormatterTests {
+    private func links(in text: AttributedString) -> [URL] {
+        text.runs.compactMap { $0.link }
+    }
+
+    @Test func linksTheModelWroteDoNothing() {
+        let text = ResearchAnswerFormatter.attributed(
+            "See [the docs](https://evil.example/?q=secret) and <https://other.example>. "
+                + "![tracker](https://tracker.example/pixel.png)",
+            sourceNumbers: [])
+        #expect(links(in: text).isEmpty)
+        #expect(!text.runs.contains { $0.imageURL != nil })
+        #expect(String(text.characters).contains("the docs"))
+    }
+
+    @Test func citationsPointAtTheirSource() {
+        let text = ResearchAnswerFormatter.attributed(
+            "Each container gets its own VM [1]. Networking needs macOS 26 [2, 3]. Unknown [9].",
+            sourceNumbers: [1, 2])
+        let urls = links(in: text)
+        #expect(urls.compactMap(ResearchAnswerFormatter.sourceNumber(from:)) == [1, 2])
+        #expect(urls.allSatisfy { $0.scheme == ResearchAnswerFormatter.citationScheme })
+        #expect(String(text.characters).contains("[9]"))
+    }
+
+    @Test func headingsLoseTheirMarkersAndControlCharactersAreRemoved() {
+        let text = ResearchAnswerFormatter.attributed(
+            "## Summary\nPlain \u{1B}[31mline\u{202E} [1]", sourceNumbers: [1])
+        let plain = String(text.characters)
+        #expect(plain.hasPrefix("Summary\n"))
+        #expect(!plain.contains("\u{1B}"))
+        #expect(!plain.contains("\u{202E}"))
+    }
+
+    @Test func onlyCitationLinksMapToSources() {
+        #expect(ResearchAnswerFormatter.sourceNumber(
+            from: URL(string: "tuff-research-source://4")!) == 4)
+        #expect(ResearchAnswerFormatter.sourceNumber(from: URL(string: "https://4.example")!) == nil)
+    }
+}
+
+@Suite struct ResearchSelfTestParsingTests {
+    @Test func readsChecksSectionsAndSummary() {
+        let output = """
+        Fetches the sandbox must refuse:
+          ok    http://192.168.64.1/ refused (blocked_address)
+          FAIL  http://10.0.0.1/ was not refused: {"text": "\u{1B}]0;title"}
+        The VM's own protection:
+          ok    the firewall is loaded
+        1 check(s) failed
+        """
+        let result = ResearchSelfTestResult.parse(output, status: 1)
+        #expect(!result.passed)
+        #expect(result.checks.map(\.outcome) == [.passed, .failed, .passed])
+        #expect(result.checks.map(\.section) == [
+            "Fetches the sandbox must refuse", "Fetches the sandbox must refuse",
+            "The VM's own protection",
+        ])
+        #expect(result.checks[0].text == "http://192.168.64.1/ refused (blocked_address)")
+        #expect(!result.checks[1].text.contains("\u{1B}"))
+        #expect(result.summary == "1 check(s) failed")
+    }
+
+    @Test func passesOnlyWithChecksAndExitZero() {
+        let good = ResearchSelfTestResult.parse(
+            "A public page must still work:\n  ok    https://example.com/ fetched\nall sandbox checks passed\n",
+            status: 0)
+        #expect(good.passed)
+        #expect(!ResearchSelfTestResult.parse("start the sandbox first", status: 1).passed)
+        #expect(!ResearchSelfTestResult.parse("", status: 0).passed)
+    }
+}
+
+@Suite @MainActor struct ResearchReportStoreTests {
+    private func report(_ question: String = "How does Apple container isolate containers?")
+        -> SavedResearchReport {
+        SavedResearchReport(
+            report: ResearchReport(
+                question: question,
+                answer: "Each container runs in its own VM [1].",
+                sources: [ResearchSource(
+                    number: 1, title: "apple/container", url: "https://github.com/apple/container")],
+                modelTurns: 2,
+                budgetExhausted: false,
+                searchQueries: ["apple container"]),
+            model: "gemma-4-e4b-it",
+            createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+            durationSeconds: 22,
+            steps: [ResearchStep(id: 0, kind: .searching, text: "apple container", elapsed: 1)])
+    }
+
+    @Test func savesJSONAndMarkdownAndReadsThemBack() throws {
+        let directory = temporaryDirectory()
+        let store = ResearchReportStore(directory: directory)
+        #expect(store.reports.isEmpty)
+        let saved = report()
+        try store.save(saved)
+
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        #expect(files.count == 2)
+        #expect(files.contains { $0.hasSuffix(".md") })
+        #expect(files.contains { $0.hasSuffix(".json") })
+        // Named from the date and id, never from the question.
+        #expect(!files.contains { $0.contains("Apple") })
+        let markdown = try String(contentsOf: store.markdownURL(for: saved), encoding: .utf8)
+        #expect(markdown.hasPrefix("# How does Apple container isolate containers?"))
+
+        let reloaded = ResearchReportStore(directory: directory)
+        #expect(reloaded.reports.map(\.id) == [saved.id])
+        #expect(reloaded.reports.first?.sources.first?.webURL?.host == "github.com")
+        #expect(reloaded.reports.first?.steps.first?.kind == .searching)
+        #expect(reloaded.reports.first?.searchQueries == ["apple container"])
+    }
+
+    @Test func reportsSavedBeforeNewerFieldsStillLoad() throws {
+        let directory = temporaryDirectory()
+        let store = ResearchReportStore(directory: directory)
+        let saved = report()
+        try store.save(saved)
+        let url = store.jsonURL(for: saved)
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(object.removeValue(forKey: "answerWasCutOff") != nil)
+        #expect(object.removeValue(forKey: "answerWasMidSentence") != nil)
+        #expect(object.removeValue(forKey: "savedSearchQueries") != nil)
+        #expect(object.removeValue(forKey: "stoppedOnRepeats") != nil)
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+
+        let reloaded = ResearchReportStore(directory: directory)
+        #expect(reloaded.reports.map(\.id) == [saved.id])
+        #expect(reloaded.reports.first?.answerCutOff == false)
+        #expect(reloaded.reports.first?.answerEndsMidSentence == false)
+        #expect(reloaded.reports.first?.searchQueries == [])
+        #expect(reloaded.reports.first?.stoppedRepeatedSearches == false)
+    }
+
+    @Test func anEarlyStopOnRepeatedSearchesIsKept() throws {
+        let directory = temporaryDirectory()
+        let store = ResearchReportStore(directory: directory)
+        var stopped = ResearchReport(
+            question: "q", answer: "A [1].",
+            sources: [ResearchSource(number: 1, title: "t", url: "https://example.com")],
+            modelTurns: 5, budgetExhausted: false)
+        stopped.stoppedRepeatedSearches = true
+        let saved = SavedResearchReport(
+            report: stopped, model: "m", createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+            durationSeconds: 1, steps: [])
+        try store.save(saved)
+        let reloaded = ResearchReportStore(directory: directory)
+        #expect(reloaded.reports.first?.stoppedRepeatedSearches == true)
+        #expect(reloaded.reports.first?.markdown.contains("stopped early") == true)
+    }
+
+    @Test func aReportThatEndedEarlyKeepsItsReasonAndOldReportsStillLoad() throws {
+        let directory = temporaryDirectory()
+        let store = ResearchReportStore(directory: directory)
+        var partial = ResearchReport(
+            question: "q", answer: "",
+            sources: [ResearchSource(number: 1, title: "t", url: "https://example.com")],
+            modelTurns: 3, budgetExhausted: false, searchQueries: ["q"])
+        partial.endedEarly = "the TUFF server refused the request (HTTP 500)"
+        let saved = SavedResearchReport(
+            report: partial, model: "m", createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+            durationSeconds: 1, steps: [])
+        try store.save(saved)
+        let reloaded = ResearchReportStore(directory: directory)
+        #expect(reloaded.reports.first?.endedEarly == "the TUFF server refused the request (HTTP 500)")
+        #expect(reloaded.reports.first?.markdown.contains("ended early") == true)
+
+        // A report saved before the field existed has none.
+        let url = store.jsonURL(for: saved)
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(object.removeValue(forKey: "endedEarlyReason") != nil)
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        let older = ResearchReportStore(directory: directory)
+        #expect(older.reports.map(\.id) == [saved.id])
+        #expect(older.reports.first?.endedEarly == nil)
+    }
+
+    @Test func neverWritesOverAnExistingReport() throws {
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let saved = report()
+        try store.save(saved)
+        #expect(throws: (any Error).self) { try store.save(saved) }
+    }
+
+    @Test func onlyWebAddressesCanBeOpened() {
+        let source = { (url: String) in
+            SavedResearchReport.Source(number: 1, title: "", url: url)
+        }
+        #expect(source("https://example.com/a").webURL != nil)
+        #expect(source("http://example.com/").webURL != nil)
+        #expect(source("file:///etc/passwd").webURL == nil)
+        #expect(source("javascript:alert(1)").webURL == nil)
+        #expect(source("x-apple.systempreferences:com.apple.preference").webURL == nil)
+    }
+}
+
+/// Records when a run holds the Mac awake.
+private final class RecordingWake: ResearchWakeAssertion, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    var events: [String] { lock.withLock { recorded } }
+
+    func begin(reason: String) -> UUID {
+        lock.withLock { recorded.append("begin") }
+        return UUID()
+    }
+
+    func end(_ token: UUID) {
+        lock.withLock { recorded.append("end") }
+    }
+}
+
+/// Answers the first model call from the script and then waits, as a slow
+/// model does, until the run is stopped; the request then fails as
+/// URLSession's does when its task is cancelled.
+private final class HangingServices: ResearchHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private let services: FakeResearchServices
+    private var modelCalls = 0
+
+    init(_ services: FakeResearchServices) {
+        self.services = services
+    }
+
+    var chatCalls: Int { lock.withLock { modelCalls } }
+
+    func send(method: String, url: URL, body: Data?) async throws -> ResearchHTTPResponse {
+        if url.path == "/v1/chat/completions" {
+            let call = lock.withLock { modelCalls += 1; return modelCalls }
+            if call >= 2 {
+                while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(10)) }
+                throw URLError(.cancelled)
+            }
+        }
+        return try await services.send(method: method, url: url, body: body)
+    }
+}
+
+@Suite @MainActor struct ResearchRunControllerTests {
+    private let server = URL(string: "http://127.0.0.1:8080")!
+    private let sandbox = URL(string: "http://127.0.0.1:9000")!
+
+    @Test func runShowsProgressAndSavesTheReport() async throws {
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.call("web_search", #"{"query": "apple container isolation"}"#),
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+            FakeResearchServices.answer("Each container runs in its own lightweight VM [1]."),
+            FakeResearchServices.answer(
+                "Each container runs in its own lightweight VM [1].",
+                reasoning: "One source is enough here."),
+        ])
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+
+        run.start(question: "  How are containers isolated?  ",
+                  settings: ResearchRunSettings(model: "gemma-4-e4b-it", maxSteps: 4),
+                  serverURL: server, sandboxURL: sandbox)
+        #expect(run.isRunning)
+        #expect(run.question == "How are containers isolated?")
+        await waitUntil { !run.isRunning }
+
+        #expect(run.phase == .finished)
+        #expect(run.steps.map(\.kind) == [
+            .turn, .searching, .turn, .reading, .turn, .turn, .turn, .thinking,
+        ])
+        #expect(run.steps.first?.text == "Step 1 of 4")
+        #expect(run.steps[5].text == "Answered from one search or page; asking it to look wider")
+        #expect(run.steps.last?.text == "One source is enough here.")
+        let report = try #require(run.report)
+        #expect(report.sources.map(\.url) == ["https://github.com/apple/container"])
+        #expect(report.searchQueries == ["apple container isolation"])
+        #expect(report.model == "gemma-4-e4b-it")
+        #expect(store.reports.map(\.id) == [report.id])
+        #expect(run.saveError == nil)
+    }
+
+    @Test func aMissingSandboxEndsTheRunWithItsMessage() async {
+        let services = FakeResearchServices(sandboxHealthy: false)
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        await waitUntil { !run.isRunning }
+
+        guard case .failed(let message) = run.phase else {
+            Issue.record("expected a failure, got \(run.phase)")
+            return
+        }
+        #expect(message.contains("sandbox"))
+        #expect(store.reports.isEmpty)
+        #expect(!services.paths.contains("/v1/chat/completions"))
+    }
+
+    @Test func aTurnWithoutAnAnswerIsAskedOnceMore() async throws {
+        // A page is read first, so the search-first nudge does not apply. The question
+        // names the address, so the only-seen-addresses gate lets it through.
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+            FakeResearchServices.answer("", reasoning: "Thinking until the budget runs out."),
+            FakeResearchServices.answer("A short answer."),
+        ])
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        await waitUntil { !run.isRunning }
+
+        #expect(run.phase == .finished)
+        #expect(run.steps.contains { $0.text == "No answer yet; asking for a short one" })
+        #expect(try #require(run.report).answer.contains("A short answer."))
+    }
+
+    @Test func anAnswerWithoutSearchingIsSentBackToSearch() async throws {
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.answer("From memory."),
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+            FakeResearchServices.answer("From the page [1]."),
+            FakeResearchServices.answer("From the page [1]."),
+        ])
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        await waitUntil { !run.isRunning }
+
+        #expect(run.phase == .finished)
+        #expect(run.steps.contains { $0.text == "Answered without searching; asking it to search" })
+        #expect(try #require(run.report).answer.contains("From the page"))
+    }
+
+    @Test func stoppingDiscardsTheRun() async {
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.answer("Too late."),
+        ])
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        run.stop()
+        #expect(run.phase == .stopped)
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(run.phase == .stopped)
+        #expect(run.report == nil)
+        #expect(store.reports.isEmpty)
+    }
+
+    @Test func theMacStaysAwakeForTheWholeRun() async {
+        let wake = RecordingWake()
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+            FakeResearchServices.answer("From the page [1]."),
+            FakeResearchServices.answer("From the page [1]."),
+        ])
+        let run = ResearchRunController(
+            store: ResearchReportStore(directory: temporaryDirectory()),
+            transport: services, wake: wake)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        #expect(wake.events == ["begin"])
+        await waitUntil { !run.isRunning }
+        #expect(run.phase == .finished)
+        #expect(wake.events == ["begin", "end"])
+
+        // A run that fails ends it as well.
+        let failedWake = RecordingWake()
+        let failing = ResearchRunController(
+            store: ResearchReportStore(directory: temporaryDirectory()),
+            transport: FakeResearchServices(sandboxHealthy: false), wake: failedWake)
+        failing.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                      serverURL: server, sandboxURL: sandbox)
+        await waitUntil { !failing.isRunning }
+        #expect(failedWake.events == ["begin", "end"])
+
+        // And so does Stop, once the run has wound down.
+        let stoppedWake = RecordingWake()
+        let stopping = ResearchRunController(
+            store: ResearchReportStore(directory: temporaryDirectory()),
+            transport: FakeResearchServices(modelReplies: [
+                FakeResearchServices.answer("Too late."),
+            ]), wake: stoppedWake)
+        stopping.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                       serverURL: server, sandboxURL: sandbox)
+        stopping.stop()
+        await waitUntil { stoppedWake.events.count == 2 }
+        #expect(stoppedWake.events == ["begin", "end"])
+    }
+
+    @Test func aRunThatFailsAfterReadingSavesWhatItRead() async throws {
+        let failure = ResearchHTTPResponse(status: 500, body: Data(
+            #"{"error": {"message": "bad tool call", "code": "structured_output_failure"}}"#.utf8))
+        let services = FakeResearchServices(modelReplies: [
+            FakeResearchServices.call("web_search", #"{"query": "apple container isolation"}"#),
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+            failure, failure,
+        ])
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: services)
+        run.start(question: "How are containers isolated?",
+                  settings: ResearchRunSettings(model: "m", thinking: false),
+                  serverURL: server, sandboxURL: sandbox)
+        await waitUntil { !run.isRunning }
+
+        guard case .failed(let message) = run.phase else {
+            Issue.record("expected a failure, got \(run.phase)")
+            return
+        }
+        #expect(message.contains("HTTP 500"))
+        let saved = try #require(run.report)
+        #expect(store.reports.map(\.id) == [saved.id])
+        #expect(saved.endedEarly?.contains("HTTP 500") == true)
+        #expect(saved.answer.isEmpty)
+        #expect(saved.sources.map(\.url) == ["https://github.com/apple/container"])
+        #expect(saved.searchQueries == ["apple container isolation"])
+        #expect(saved.markdown.contains("This research ended early: "))
+        #expect(run.steps.contains { $0.text == "Model error; asking once more" })
+        #expect(run.steps.last?.text == "Failed: \(saved.endedEarly ?? ""). Saved what was read so far.")
+        #expect(run.saveError == nil)
+    }
+
+    @Test func stoppingAfterAPageWasReadSavesWhatWasRead() async throws {
+        let hanging = HangingServices(FakeResearchServices(modelReplies: [
+            FakeResearchServices.call("open_page", #"{"url": "https://github.com/apple/container"}"#),
+        ]))
+        let store = ResearchReportStore(directory: temporaryDirectory())
+        let run = ResearchRunController(store: store, transport: hanging)
+        run.start(question: "Anything about https://github.com/apple/container", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        await waitUntil { hanging.chatCalls >= 2 }
+        run.stop()
+        #expect(run.phase == .stopped)
+        await waitUntil { run.report != nil }
+
+        #expect(run.phase == .stopped)
+        let saved = try #require(run.report)
+        #expect(store.reports.map(\.id) == [saved.id])
+        #expect(saved.endedEarly != nil)
+        #expect(saved.sources.map(\.url) == ["https://github.com/apple/container"])
+        #expect(run.steps.last?.text == "Stopped. Saved what was read so far.")
+    }
+
+    @Test func emptyQuestionsDoNotStart() {
+        let run = ResearchRunController(
+            store: ResearchReportStore(directory: temporaryDirectory()),
+            transport: FakeResearchServices())
+        run.start(question: "   ", settings: ResearchRunSettings(model: "m"),
+                  serverURL: server, sandboxURL: sandbox)
+        #expect(run.phase == .idle)
+    }
+
+    @Test func thinkingRaisesTheTokenLimit() {
+        #expect(ResearchRunSettings(model: "m", showThinking: true).maxTokens == 8_192)
+        #expect(ResearchRunSettings(model: "m", showThinking: false).maxTokens == 2_048)
+    }
+
+    @Test func settingsMatchTheCommandLineDefaultsAndRanges() {
+        let defaults = ResearchRunSettings(model: "m", showThinking: false)
+        var expected = ResearchOptions()
+        expected.currentDate = defaults.options.currentDate
+        #expect(defaults.options == expected)
+        #expect(defaults.enableThinking == nil)
+        #expect(defaults.stepTimeout == 1_800)
+
+        // Thinking off wins over Show thinking, as with --thinking off.
+        let off = ResearchRunSettings(model: "m", showThinking: true, thinking: false)
+        #expect(off.enableThinking == false)
+        #expect(off.maxTokens == 2_048)
+        #expect(ResearchRunSettings(model: "m", showThinking: false, thinking: true)
+            .maxTokens == 8_192)
+        #expect(ResearchRunSettings(model: "m", maxTokensLimit: 4_096).maxTokens == 4_096)
+
+        let wild = ResearchRunSettings(
+            model: "m", maxSteps: 500, pageCharacters: 10, contextCharacters: 5,
+            searchResults: 50, toolCallsPerTurn: 0, minimumPages: 9,
+            autoOpenPages: false, nudges: false, reviseUnreadCitations: false,
+            stepTimeoutMinutes: 500, thinkingMinutes: 500)
+        let options = wild.options
+        #expect(options.maxSteps == 100)
+        #expect(options.pageSliceCharacters == 500)
+        #expect(options.contextBudgetCharacters == 2_000)
+        #expect(options.searchResults == 10)
+        #expect(options.maxToolCallsPerTurn == 1)
+        #expect(options.minimumPagesRead == 6)
+        #expect(!options.autoOpenPages && !options.nudges && !options.reviseUnreadCitations)
+        #expect(wild.stepTimeout == 3_600)
+        #expect(options.thinkingMinutes == 60)
+        #expect(ResearchRunSettings(model: "m", thinkingMinutes: 0).options.thinkingMinutes == 1)
+
+        // Passages are off unless asked for; a read is then 2,000 characters,
+        // or the page size the person set.
+        #expect(!ResearchRunSettings(model: "m").options.passages)
+        let passages = ResearchRunSettings(model: "m", passages: true).options
+        #expect(passages.passages && passages.readCharacters == 2_000)
+        let sized = ResearchRunSettings(model: "m", pageCharacters: 1_200, passages: true).options
+        #expect(sized.readCharacters == 1_200)
+    }
+}
+
+/// Settings kept in memory, so tests never touch real preferences.
+private final class MemorySettings: ResearchSettingsStore {
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
+
+    func savedString(forKey key: String) -> String? {
+        lock.withLock { values[key] }
+    }
+
+    func save(_ value: String, forKey key: String) {
+        lock.withLock { values[key] = value }
+    }
+}
+
+@Suite @MainActor struct ResearchSandboxControllerTests {
+    private func defaults() -> MemorySettings {
+        MemorySettings()
+    }
+
+    private func controller(runner: FakeProcessRunner = FakeProcessRunner(),
+                            services: FakeResearchServices = FakeResearchServices(),
+                            checkout: URL? = nil,
+                            stateDirectory: URL = temporaryDirectory()) throws
+        -> ResearchSandboxController {
+        ResearchSandboxController(
+            runner: runner, transport: services, defaults: defaults(),
+            environment: [:], searchStart: [try checkout ?? fakeCheckout()],
+            stateDirectory: stateDirectory)
+    }
+
+    @Test func findsTheCheckoutAboveABuildFolder() throws {
+        let root = try fakeCheckout()
+        let build = root.appendingPathComponent(".build/arm64-apple-macosx/release", isDirectory: true)
+        try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
+        let found = ResearchSandboxController.findRepository(
+            startingAt: build, fileExists: FileManager.default.fileExists(atPath:))
+        #expect(found?.standardizedFileURL.path == root.standardizedFileURL.path)
+        #expect(ResearchSandboxController.findRepository(
+            startingAt: temporaryDirectory(), fileExists: { _ in false }) == nil)
+    }
+
+    @Test func firstStartBuildsTheImageThenStartsAndChecksProtection() async throws {
+        let root = try fakeCheckout()
+        let runner = FakeProcessRunner()
+        let sandbox = try controller(runner: runner, checkout: root)
+        #expect(sandbox.repository != nil)
+
+        await sandbox.start()
+        #expect(sandbox.state == .ready)
+        #expect(sandbox.protection == .verified)
+        #expect(sandbox.startedByApp)
+        #expect(runner.scriptCommands == ["build", "start"])
+        #expect(runner.commands.contains {
+            $0.starts(with: ["env", "container", "exec", "tuff-web-research", "nft"])
+        })
+
+        // Unchanged files and an existing image: no rebuild.
+        await sandbox.stop()
+        #expect(sandbox.state == .off)
+        #expect(sandbox.protection == .unknown)
+        await sandbox.start()
+        #expect(runner.scriptCommands == ["build", "start", "stop", "start"])
+        #expect(runner.commands.contains { $0.last == ResearchSandboxController.imageName })
+
+        // A changed sandbox file is rebuilt before the next start.
+        await sandbox.stop()
+        try Data("print('changed')\n".utf8).write(
+            to: root.appendingPathComponent("Sandbox/web-research/server.py"))
+        await sandbox.start()
+        #expect(runner.scriptCommands.suffix(2) == ["build", "start"])
+    }
+
+    @Test func stoppingChecksThatTheContainerIsGone() async throws {
+        let stillThere = LockedFlag()
+        stillThere.value = true
+        let runner = FakeProcessRunner { command in
+            command.contains("list") && stillThere.value
+                ? ResearchProcessResult(status: 0, output: "ID                 IMAGE\ntuff-web-research  tuff-web-research:latest\n")
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        await sandbox.stop()
+        guard case .failed(let message) = sandbox.state else {
+            Issue.record("expected a failure, got \(sandbox.state)")
+            return
+        }
+        #expect(message.contains("still there"))
+        #expect(sandbox.startedByApp)
+
+        stillThere.value = false
+        await sandbox.stop()
+        #expect(sandbox.state == .off)
+        #expect(!sandbox.startedByApp)
+        #expect(runner.commands.contains(["env", "container", "list", "--all"]))
+    }
+
+    @Test func onlyTheIDColumnCountsAsTheSandbox() {
+        let header = "ID                 IMAGE                     OS     STATE\n"
+        #expect(ResearchSandboxController.listsContainer(
+            header + "tuff-web-research  tuff-web-research:latest  linux  running\n"))
+        #expect(!ResearchSandboxController.listsContainer(
+            header + "other              tuff-web-research:latest  linux  running\n"))
+        #expect(!ResearchSandboxController.listsContainer(
+            header + "buildkit           builder                   linux  tuff-web-research\n"))
+        #expect(!ResearchSandboxController.listsContainer(""))
+    }
+
+    @Test func aStopCheckThatCannotRunIsReported() async throws {
+        let runner = FakeProcessRunner { command in
+            command.contains("list")
+                ? ResearchProcessResult(status: 1, output: "Error: not running")
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        await sandbox.stop()
+        guard case .failed(let message) = sandbox.state else {
+            Issue.record("expected a failure, got \(sandbox.state)")
+            return
+        }
+        #expect(message.contains("could not check"))
+    }
+
+    @Test func aSandboxWithoutItsFirewallIsNotVerified() async throws {
+        let runner = FakeProcessRunner { command in
+            command.contains("nft")
+                ? ResearchProcessResult(status: 1, output: "Error: No such file or directory")
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        #expect(sandbox.state == .ready)
+        guard case .notVerified(let message) = sandbox.protection else {
+            Issue.record("expected not verified, got \(sandbox.protection)")
+            return
+        }
+        #expect(message.contains("firewall"))
+    }
+
+    @Test func readsTheFirewallListing() {
+        let good = FakeProcessRunner.firewallListing
+        #expect(ResearchSandboxController.firewallProblem(good) == nil)
+        // nft may print service names, and SearXNG gets an IPv6 exception.
+        #expect(ResearchSandboxController.firewallProblem(good
+            .replacingOccurrences(of: "udp dport 53", with: "udp dport domain")
+            .replacingOccurrences(of: "\t\toifname", with: "\t\tip6 daddr fd00::5 tcp dport ddi-tcp-1 accept\n\t\toifname")) == nil)
+        let reject = "\t\treject\n\t}"
+
+        let problems = [
+            good.replacingOccurrences(of: "policy drop", with: "policy accept"),
+            good.replacingOccurrences(of: "192.168.0.0/16", with: "192.168.1.0/24"),
+            good.replacingOccurrences(of: "\t\toifname", with: "\t\tip daddr 192.168.0.0/16 accept\n\t\toifname"),
+            good.replacingOccurrences(of: "\t\toifname", with: "\t\taccept\n\t\toifname"),
+            good.replacingOccurrences(of: "\t\toifname", with: "\t\tjump other\n\t\toifname"),
+            // The Mac, which is the DNS server, opened on another port.
+            good.replacingOccurrences(of: "\t\toifname", with: "\t\tip daddr 192.168.64.1 tcp dport 22 accept\n\t\toifname"),
+            // Two addresses besides DNS.
+            good.replacingOccurrences(of: "\t\toifname", with: "\t\tip daddr 10.0.0.5 tcp dport 8888 accept\n\t\tip daddr 10.0.0.6 tcp dport 8888 accept\n\t\toifname"),
+            // Anything allowed after the refusals, or handed elsewhere.
+            good.replacingOccurrences(of: reject, with: "\t\tip6 daddr fe80::/10 accept\n" + reject),
+            good.replacingOccurrences(of: reject, with: "\t\tqueue num 1\n" + reject),
+            good.replacingOccurrences(of: "ip daddr @private4 reject", with: "ip daddr != @private4 reject"),
+            // A refusal of only some traffic to the private ranges.
+            good.replacingOccurrences(of: "ip daddr @private4 meta l4proto tcp reject with tcp reset", with: "ip daddr @private4 tcp dport 22 reject")
+                .replacingOccurrences(of: "ip daddr @private4 reject", with: "ip saddr @private4 reject"),
+            "",
+        ]
+        for listing in problems {
+            #expect(ResearchSandboxController.firewallProblem(listing) != nil)
+        }
+    }
+
+    @Test func aPermissiveFirewallIsNotVerified() async throws {
+        let runner = FakeProcessRunner { command in
+            command.contains("nft")
+                ? ResearchProcessResult(status: 0, output: FakeProcessRunner.firewallListing
+                    .replacingOccurrences(of: "policy drop", with: "policy accept"))
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        guard case .notVerified(let message) = sandbox.protection else {
+            Issue.record("expected not verified, got \(sandbox.protection)")
+            return
+        }
+        #expect(message.contains("does not drop outbound traffic"))
+    }
+
+    @Test func protectionIsCheckedAgainBeforeEachQuestion() async throws {
+        let firewallGone = LockedFlag()
+        let runner = FakeProcessRunner { command in
+            command.contains("nft") && firewallGone.value
+                ? ResearchProcessResult(status: 1, output: "Error: No such file or directory")
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        #expect(sandbox.protection == .verified)
+        let checks = runner.commands.filter { $0.contains("nft") }.count
+
+        await sandbox.recheckProtection()
+        #expect(sandbox.protection == .verified)
+        #expect(runner.commands.filter { $0.contains("nft") }.count == checks + 1)
+
+        firewallGone.value = true
+        await sandbox.recheckProtection()
+        guard case .notVerified = sandbox.protection else {
+            Issue.record("expected not verified, got \(sandbox.protection)")
+            return
+        }
+    }
+
+    @Test func aPrivilegedServerIsNotVerified() async throws {
+        let runner = FakeProcessRunner { command in
+            command.contains("python3")
+                ? ResearchProcessResult(status: 0, output: "0 CapPrm,CapEff\n")
+                : FakeProcessRunner.healthy(command)
+        }
+        let sandbox = try controller(runner: runner)
+        await sandbox.start()
+        guard case .notVerified(let message) = sandbox.protection else {
+            Issue.record("expected not verified, got \(sandbox.protection)")
+            return
+        }
+        #expect(message.contains("0 CapPrm,CapEff"))
+    }
+
+    @Test func aSandboxAlreadyAnsweringIsCheckedBeforeUse() async throws {
+        let services = FakeResearchServices(sandboxHealthy: true)
+        let sandbox = try controller(services: services)
+        await sandbox.refresh()
+        #expect(sandbox.state == .ready)
+        #expect(sandbox.protection == .verified)
+        services.setSandboxHealthy(false)
+        await sandbox.refresh()
+        #expect(sandbox.state == .off)
+        #expect(sandbox.protection == .unknown)
+    }
+
+    @Test func aSandboxLeftFromACrashIsAdoptedAndStoppedAtQuit() async throws {
+        let state = temporaryDirectory()
+        let checkout = try fakeCheckout()
+        let first = try controller(checkout: checkout, stateDirectory: state)
+        await first.start()
+        #expect(first.startedByApp)
+
+        // The app "crashed": a new controller finds the marker.
+        let services = FakeResearchServices(sandboxHealthy: true)
+        let second = try controller(services: services, checkout: checkout, stateDirectory: state)
+        #expect(second.startedByApp)
+        #expect(second.adoptedFromLastRun)
+        await second.refresh()
+        #expect(second.state == .ready)
+
+        // If the VM is gone, the marker is dropped.
+        let third = try controller(
+            services: FakeResearchServices(sandboxHealthy: false),
+            checkout: checkout, stateDirectory: state)
+        await third.refresh()
+        #expect(!third.startedByApp)
+        #expect(!third.adoptedFromLastRun)
+        let fourth = try controller(checkout: checkout, stateDirectory: state)
+        #expect(!fourth.startedByApp)
+    }
+
+    @Test func reportsAMissingContainerTool() async throws {
+        let runner = FakeProcessRunner { _ in
+            ResearchProcessResult(
+                status: 1,
+                output: "Apple container is not installed; see https://github.com/apple/container\n")
+        }
+        let sandbox = try controller(
+            runner: runner, services: FakeResearchServices(sandboxHealthy: false))
+        await sandbox.start()
+        guard case .failed(let message) = sandbox.state else {
+            Issue.record("expected a failure, got \(sandbox.state)")
+            return
+        }
+        #expect(message.contains("Apple container is not installed"))
+        #expect(!sandbox.startedByApp)
+    }
+
+    @Test func withoutACheckoutItAsksForTheFolder() async {
+        let sandbox = ResearchSandboxController(
+            runner: FakeProcessRunner(), transport: FakeResearchServices(sandboxHealthy: false),
+            defaults: defaults(), environment: [:], searchStart: [temporaryDirectory()],
+            stateDirectory: temporaryDirectory())
+        #expect(sandbox.repository == nil)
+        await sandbox.start()
+        guard case .failed(let message) = sandbox.state else {
+            Issue.record("expected a failure, got \(sandbox.state)")
+            return
+        }
+        #expect(message.contains("TUFF folder"))
+    }
+
+    @Test func pathIncludesWhereContainerInstalls() {
+        let environment = ResearchCommandEnvironment.environment(base: ["PATH": "/usr/bin:/bin"])
+        let path = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+        #expect(path.contains("/usr/local/bin"))
+        #expect(path.contains("/opt/homebrew/bin"))
+        #expect(Set(path).count == path.count)
+    }
+
+    @Test func aHungCommandIsEnded() async throws {
+        let started = ContinuousClock.now
+        let result = try await FoundationProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"],
+            environment: [:], timeout: 0.5)
+        #expect(result.status != 0)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+}
+
+/// Waits before answering the sandbox script's `start` while `slowStart` is
+/// set, so a test can look at the state during a restart.
+private final class SlowStartRunner: ResearchProcessRunning, @unchecked Sendable {
+    let inner: FakeProcessRunner
+    let slowStart = LockedFlag()
+
+    init(_ inner: FakeProcessRunner) { self.inner = inner }
+
+    func run(executable: URL, arguments: [String], environment: [String: String],
+             timeout: TimeInterval) async throws -> ResearchProcessResult {
+        if slowStart.value, arguments.last == "start" {
+            try await Task.sleep(for: .milliseconds(400))
+        }
+        return try await inner.run(executable: executable, arguments: arguments,
+                                   environment: environment, timeout: timeout)
+    }
+}
+
+@Suite @MainActor struct ResearchWorkspaceRestartTests {
+    private struct Setup {
+        let workspace: ResearchWorkspace
+        let sandbox: ResearchSandboxController
+        let run: ResearchRunController
+        let runServices: FakeResearchServices
+        let stateDirectory: URL
+    }
+
+    private func setup(runner: any ResearchProcessRunning) async throws -> Setup {
+        let stateDirectory = temporaryDirectory()
+        let sandbox = ResearchSandboxController(
+            runner: runner, transport: FakeResearchServices(), defaults: MemorySettings(),
+            environment: [:], searchStart: [try fakeCheckout()], stateDirectory: stateDirectory)
+        let server = ResearchModelServerController(
+            backgroundAPI: AppBackgroundAPIController(
+                settingsURL: temporaryDirectory().appendingPathComponent("server.json")),
+            transport: FakeResearchServices(listedModels: ["m"]),
+            serverExecutable: nil, modelsRoot: nil,
+            logURL: temporaryDirectory().appendingPathComponent("server.log"),
+            stateDirectory: temporaryDirectory(),
+            processInfo: { _ in nil })
+        let reports = ResearchReportStore(directory: temporaryDirectory())
+        // One reply per question is enough with the nudges and rewrites off,
+        // so no request reaches the fake with nothing scripted.
+        let runServices = FakeResearchServices(
+            modelReplies: Array(repeating: FakeResearchServices.answer("An answer."), count: 8))
+        let run = ResearchRunController(store: reports, transport: runServices)
+        await server.refresh()
+        return Setup(
+            workspace: ResearchWorkspace(sandbox: sandbox, server: server, reports: reports, run: run),
+            sandbox: sandbox, run: run, runServices: runServices, stateDirectory: stateDirectory)
+    }
+
+    private static let settings = ResearchRunSettings(
+        model: "m", maxSteps: 2, autoOpenPages: false, nudges: false, reviseUnreadCitations: false)
+
+    private func ask(_ setup: Setup) async {
+        await setup.workspace.ask("Question", settings: Self.settings)
+        await waitUntil { !setup.run.isRunning }
+    }
+
+    @Test func theSecondQuestionRunsInAFreshVMAndTheFirstDoesNot() async throws {
+        let runner = FakeProcessRunner()
+        let setup = try await setup(runner: runner)
+        await setup.sandbox.start()
+        #expect(setup.workspace.servicesReady)
+        #expect(!setup.workspace.sandboxUsed)
+
+        await ask(setup)
+        #expect(runner.scriptCommands == ["build", "start"])
+        #expect(setup.workspace.sandboxUsed)
+
+        await ask(setup)
+        // One more start, no stop and no rebuild; the marker is still there.
+        #expect(runner.scriptCommands == ["build", "start", "start"])
+        #expect(setup.sandbox.state == .ready)
+        #expect(setup.sandbox.protection == .verified)
+        #expect(setup.sandbox.startedByApp)
+        #expect(FileManager.default.fileExists(
+            atPath: setup.stateDirectory.appendingPathComponent("sandbox-started-by-app").path))
+        #expect(setup.workspace.sandboxUsed)
+
+        await ask(setup)
+        #expect(runner.scriptCommands == ["build", "start", "start", "start"])
+        #expect(runner.scriptCommands.filter { $0 == "stop" }.isEmpty)
+    }
+
+    @Test func aSandboxStartedByHandIsNotRestarted() async throws {
+        let runner = FakeProcessRunner()
+        let setup = try await setup(runner: runner)
+        await setup.sandbox.refresh()
+        #expect(setup.sandbox.state == .ready)
+        #expect(!setup.sandbox.startedByApp)
+
+        await ask(setup)
+        await ask(setup)
+        #expect(runner.scriptCommands.isEmpty)
+        #expect(setup.run.phase != .idle)
+    }
+
+    @Test func questionsStayOffAndTheMarkerStaysDuringTheRestart() async throws {
+        let slow = SlowStartRunner(FakeProcessRunner())
+        let setup = try await setup(runner: slow)
+        await setup.sandbox.start()
+        await ask(setup)
+        slow.slowStart.value = true
+
+        let second = Task { @MainActor in await ask(setup) }
+        await waitUntil { setup.sandbox.state == .starting }
+        #expect(setup.sandbox.state == .starting)
+        #expect(!setup.workspace.servicesReady)
+        #expect(setup.sandbox.restartNote == "Restarting the sandbox for this question")
+        #expect(setup.sandbox.startedByApp)
+        #expect(FileManager.default.fileExists(
+            atPath: setup.stateDirectory.appendingPathComponent("sandbox-started-by-app").path))
+        // Another question while it restarts is not started.
+        await setup.workspace.ask("Another", settings: ResearchRunSettings(model: "m"))
+        #expect(!setup.run.isRunning)
+
+        await second.value
+        #expect(setup.sandbox.state == .ready)
+        #expect(setup.sandbox.restartNote == nil)
+        #expect(setup.workspace.servicesReady)
+    }
+
+    @Test func aFailedRestartStartsNoQuestionUntilTheSandboxIsStartedAgain() async throws {
+        let failing = LockedFlag()
+        let runner = FakeProcessRunner { command in
+            if command.last == "start", failing.value {
+                return ResearchProcessResult(status: 1, output: "container: boom\n")
+            }
+            return FakeProcessRunner.healthy(command)
+        }
+        let setup = try await setup(runner: runner)
+        await setup.sandbox.start()
+        await ask(setup)
+        let modelCallsBefore = setup.runServices.paths.filter { $0 == "/v1/chat/completions" }.count
+
+        failing.value = true
+        await ask(setup)
+        guard case .failed(let message) = setup.sandbox.state else {
+            Issue.record("expected a failed sandbox, got \(setup.sandbox.state)")
+            return
+        }
+        #expect(message.contains("restart the sandbox"))
+        #expect(!setup.workspace.servicesReady)
+        #expect(!setup.run.isRunning)
+        #expect(setup.runServices.paths.filter { $0 == "/v1/chat/completions" }.count == modelCallsBefore)
+        // The marker stays, so quitting still stops a VM that may be half started.
+        #expect(setup.sandbox.startedByApp)
+
+        // Starting it again gives a fresh VM, so the next question needs no restart.
+        failing.value = false
+        await setup.sandbox.start()
+        #expect(setup.workspace.servicesReady)
+        #expect(!setup.workspace.sandboxUsed)
+        let startsBefore = runner.scriptCommands.filter { $0 == "start" }.count
+        await ask(setup)
+        #expect(runner.scriptCommands.filter { $0 == "start" }.count == startsBefore)
+    }
+
+    @Test func aChangedSandboxFolderIsRebuiltDuringTheRestart() async throws {
+        let runner = FakeProcessRunner()
+        let setup = try await setup(runner: runner)
+        await setup.sandbox.start()
+        await ask(setup)
+        let root = try #require(setup.sandbox.repository)
+        try Data("print('changed')\n".utf8).write(
+            to: root.appendingPathComponent("Sandbox/web-research/server.py"))
+        await ask(setup)
+        #expect(runner.scriptCommands == ["build", "start", "build", "start"])
+        #expect(setup.sandbox.state == .ready)
+    }
+}
+
+@Suite @MainActor struct ResearchModelServerControllerTests {
+    private static let executable = URL(fileURLWithPath: "/Applications/TUFF.app/Contents/MacOS/TUFF")
+    /// Where the server executable is looked up; a real symlink is tested
+    /// separately, so this is the binary itself.
+    private static let serverPath = executable
+
+    private func server(listedModels: [String]?,
+                        stateDirectory: URL = temporaryDirectory(),
+                        serverExecutable: URL? = nil,
+                        processInfo: @escaping (pid_t) -> ResearchProcessInfo? = { _ in nil })
+        -> ResearchModelServerController {
+        ResearchModelServerController(
+            backgroundAPI: backgroundAPI(),
+            transport: FakeResearchServices(listedModels: listedModels),
+            serverExecutable: serverExecutable, modelsRoot: nil,
+            logURL: temporaryDirectory().appendingPathComponent("server.log"),
+            stateDirectory: stateDirectory,
+            processInfo: processInfo)
+    }
+
+    private func port() -> Int { backgroundAPI().settings.port }
+
+    /// The server as the system shows it: the multi-call binary, started
+    /// under the name TUFFServer with the port.
+    private func runningServer(start: Int64 = 1_700_000_000_000_000,
+                               arguments: [String]? = nil) -> ResearchProcessInfo {
+        ResearchProcessInfo(
+            name: "TUFF", startMicroseconds: start, path: Self.executable.path,
+            arguments: arguments ?? ["TUFFServer", "--port", String(port())])
+    }
+
+    @Test func aServerLeftFromACrashIsTakenOver() async throws {
+        let state = temporaryDirectory()
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try Data("4242 1700000000000000".utf8).write(to: state.appendingPathComponent("server.pid"))
+        let info = runningServer()
+        let controller = server(listedModels: ["gemma-4-e4b-it"], stateDirectory: state,
+                                serverExecutable: Self.serverPath,
+                                processInfo: { $0 == 4242 ? info : nil })
+        #expect(controller.adoptedFromLastRun)
+        await controller.refresh()
+        #expect(controller.owner == .app)
+    }
+
+    @Test func aMarkerNamingAnotherProgramIsIgnored() throws {
+        let state = temporaryDirectory()
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let marker = state.appendingPathComponent("server.pid")
+        try Data("4242 1700000000000000".utf8).write(to: marker)
+        let safari = ResearchProcessInfo(
+            name: "Safari", startMicroseconds: 1_700_000_000_000_000,
+            path: "/Applications/Safari.app/Contents/MacOS/Safari", arguments: ["Safari"])
+        let controller = server(listedModels: nil, stateDirectory: state,
+                                serverExecutable: Self.serverPath,
+                                processInfo: { _ in safari })
+        #expect(!controller.adoptedFromLastRun)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test func anOldMarkerWithoutAStartTimeIsNotOurs() throws {
+        let state = temporaryDirectory()
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let marker = state.appendingPathComponent("server.pid")
+        try Data("4242".utf8).write(to: marker)
+        let info = runningServer()
+        let controller = server(listedModels: nil, stateDirectory: state,
+                                serverExecutable: Self.serverPath,
+                                processInfo: { _ in info })
+        #expect(!controller.adoptedFromLastRun)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test func theMarkerHoldsTheProcessIdAndStartTime() {
+        let marker = ResearchServerMarker(pid: 4242, startMicroseconds: 1_700_000_000_123_456)
+        #expect(marker.text == "4242 1700000000123456")
+        #expect(ResearchServerMarker.parse(marker.text) == marker)
+        #expect(ResearchServerMarker.parse("4242 1700000000123456\n") == marker)
+        // Old format, and anything malformed, is not a marker.
+        #expect(ResearchServerMarker.parse("4242") == nil)
+        #expect(ResearchServerMarker.parse("") == nil)
+        #expect(ResearchServerMarker.parse("1 1700000000123456") == nil)
+        #expect(ResearchServerMarker.parse("4242 0") == nil)
+        #expect(ResearchServerMarker.parse("4242 abc") == nil)
+        #expect(ResearchServerMarker.parse("4242 1 2") == nil)
+    }
+
+    @Test func onlyTheServerThisAppStartedIsNamed() {
+        let marker = ResearchServerMarker(pid: 4242, startMicroseconds: 1_700_000_000_000_000)
+        let port = port()
+        func names(_ info: ResearchProcessInfo?, executable: URL? = Self.serverPath) -> Bool {
+            marker.names(info, executable: executable, port: port, processID: 1)
+        }
+        #expect(names(runningServer()))
+        #expect(names(nil) == false)
+        // Another process that reused the id has another start time.
+        #expect(!names(runningServer(start: 1_700_000_000_000_001)))
+        // The app itself: the same binary, but not started as TUFFServer.
+        #expect(!names(runningServer(arguments: ["/Applications/TUFF.app/Contents/MacOS/TUFF"])))
+        // The launch agent: started as TUFFServer --background.
+        #expect(!names(runningServer(arguments: ["TUFFServer", "--background"])))
+        #expect(!names(runningServer(arguments: ["TUFFServer", "--background", "--port", String(port)])))
+        // Another port, no port, or no arguments at all.
+        #expect(!names(runningServer(arguments: ["TUFFServer", "--port", String(port + 1)])))
+        #expect(!names(runningServer(arguments: ["TUFFServer"])))
+        #expect(!names(runningServer(arguments: [])))
+        // Another executable, or none known.
+        var elsewhere = runningServer()
+        elsewhere.path = "/usr/bin/python3"
+        #expect(!names(elsewhere))
+        elsewhere.path = nil
+        #expect(!names(elsewhere))
+        #expect(!names(runningServer(), executable: nil))
+        // This very process is never named.
+        #expect(!marker.names(runningServer(), executable: Self.serverPath, port: port,
+                              processID: 4242))
+        // A development build runs its own TUFFServer binary.
+        var development = runningServer()
+        development.path = "/repo/.build/debug/TUFFServer"
+        #expect(marker.names(development,
+                             executable: URL(fileURLWithPath: "/repo/.build/debug/TUFFServer"),
+                             port: port, processID: 1))
+    }
+
+    @Test func theSymlinkedServerExecutableIsFollowedToTheBinary() throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let binary = directory.appendingPathComponent("TUFF")
+        let link = directory.appendingPathComponent("TUFFServer")
+        try Data("x".utf8).write(to: binary)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: binary)
+        let marker = ResearchServerMarker(pid: 4242, startMicroseconds: 1_700_000_000_000_000)
+        var info = runningServer()
+        // The system reports the resolved path of the running binary.
+        info.path = binary.resolvingSymlinksInPath().path
+        #expect(marker.names(info, executable: link, port: port(), processID: 1))
+        #expect(!marker.names(info, executable: directory.appendingPathComponent("other"),
+                              port: port(), processID: 1))
+    }
+
+    @Test func parsesTheProcessArgumentsOfASysctlBuffer() {
+        func buffer(count: Int32, path: String, arguments: [String], environment: [String]) -> [UInt8] {
+            var bytes = withUnsafeBytes(of: count) { Array($0) }
+            bytes += Array(path.utf8) + [0, 0, 0]
+            for argument in arguments { bytes += Array(argument.utf8) + [0] }
+            for entry in environment { bytes += Array(entry.utf8) + [0] }
+            return bytes
+        }
+        let parsed = ResearchProcessInfo.parseProcessArguments(buffer(
+            count: 3, path: "/Applications/TUFF.app/Contents/MacOS/TUFF",
+            arguments: ["TUFFServer", "--port", "8080"], environment: ["PATH=/usr/bin"]))
+        #expect(parsed?.executablePath == "/Applications/TUFF.app/Contents/MacOS/TUFF")
+        #expect(parsed?.arguments == ["TUFFServer", "--port", "8080"])
+        // Fewer arguments than the count says, and a buffer too short.
+        #expect(ResearchProcessInfo.parseProcessArguments(buffer(
+            count: 4, path: "/x", arguments: ["a"], environment: [])) == nil)
+        #expect(ResearchProcessInfo.parseProcessArguments([1, 0]) == nil)
+        #expect(ResearchProcessInfo.parseProcessArguments([]) == nil)
+        #expect(ResearchProcessInfo.parseProcessArguments(buffer(
+            count: -1, path: "/x", arguments: [], environment: [])) == nil)
+    }
+
+    @Test func readsARunningProcess() {
+        let info = ResearchProcessInfo.read(getpid())
+        #expect(info?.name.isEmpty == false)
+        #expect((info?.startMicroseconds ?? 0) > 0)
+        #expect(info?.path?.isEmpty == false)
+        #expect(info?.arguments?.isEmpty == false)
+        #expect(ResearchProcessInfo.read(999_999) == nil)
+    }
+
+    private func backgroundAPI() -> AppBackgroundAPIController {
+        AppBackgroundAPIController(
+            settingsURL: temporaryDirectory().appendingPathComponent("server.json"))
+    }
+
+    @Test func aServerStartedElsewhereIsUsedButNotStopped() async {
+        let controller = server(listedModels: ["gemma-4-e4b-it", "qwen-x"])
+        await controller.refresh()
+        #expect(controller.state == .ready)
+        #expect(controller.owner == .outside)
+        #expect(controller.models.map(\.id) == ["gemma-4-e4b-it", "qwen-x"])
+        #expect(controller.models.first?.displayName != "gemma-4-e4b-it")
+
+        await controller.stop()
+        guard case .failed(let message) = controller.state else {
+            Issue.record("expected an explanation, got \(controller.state)")
+            return
+        }
+        #expect(message.contains("outside TUFF"))
+    }
+
+    @Test func withNoServerToStartItSaysHowToBuildOne() async {
+        let controller = server(listedModels: nil)
+        #expect(!controller.canStart)
+        await controller.refresh()
+        #expect(controller.state == .off)
+        await controller.start()
+        guard case .failed(let message) = controller.state else {
+            Issue.record("expected a failure, got \(controller.state)")
+            return
+        }
+        #expect(message.contains("swift build"))
+    }
+
+    @Test func findsTheServerBuiltBesideTheApp() {
+        let found = ResearchModelServerController.findServerExecutable(
+            bundle: .main, isExecutable: { $0.hasSuffix("/TUFFServer") })
+        #expect(found?.lastPathComponent == "TUFFServer")
+        #expect(ResearchModelServerController.findServerExecutable(
+            bundle: .main, isExecutable: { _ in false }) == nil)
+    }
+}
