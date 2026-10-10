@@ -72,15 +72,17 @@ This is a work in progress that I run and test on my own Mac first.
 - It works with Qwen3.6 35B-A3B, Gemma 4 26B-A4B and Gemma 4 E4B. In the
   latest test, all 10 runs (5 questions, 2 models) finished with answers
   that cite only pages that were really read.
-- Newest Mac-tested state: commit `3871fc5` (round F with cache and
-  answer-length fixes, the refusal of private network addresses in
-  `open_page`, and the merge of TUFF 8.3.1 into the research branch; before
-  that, rounds C, D and E: fewer invented addresses, no source numbers for
-  empty pages, stricter figure and cut-off checks). Reading the best matching
-  passages first (round B) was tried on the Mac and stays off by default.
-  Still in testing: commit `ec5cd80` (the model lists each source once). Open
-  points include a cache miss when the run switches to the answer, and a
-  cut-off answer that is not always continued (being fixed). See the
+- Newest Mac-tested state: commit `f910282` (research tests 249 of 249,
+  app research tests 55 of 55). Since the last status: a cut-off answer is
+  continued when it fits the window, the model lists each source once, the
+  CLI says why a requested rewrite was not kept, the figure check has fewer
+  false alarms, and a repeated symbol at the seam of a continued answer is
+  dropped. Before that: round F, the refusal of private network addresses in
+  `open_page`, the merge of TUFF 8.3.1, and rounds C, D and E. Reading the
+  best matching passages first (round B) was tried on the Mac and stays off
+  by default. The cache miss at the switch to the answer turned out not to be
+  a bug. Open points include an unread source that can still survive in rare
+  cases. See the
   [test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md).
 - It was written with Claude Code (an AI coding assistant) and has been
   through several rounds of security review by a separate Claude session,

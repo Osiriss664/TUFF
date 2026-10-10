@@ -4,7 +4,7 @@ How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
 The five-question comparison was run on 5 October 2026 with the code at commit
 `4a94397`; the automated tests and the checks of the newest changes were run
-on 6 to 10 October 2026 with commits from `3263de4` to `3871fc5`, all on the `feature/web-research`
+on 6 to 10 October 2026 with commits from `3263de4` to `f910282`, all on the `feature/web-research`
 branch.
 
 [Back to the front page](../README.md) ·
@@ -13,6 +13,9 @@ branch.
 [Technical reference](technical.md)
 
 ## Automated tests
+
+Commit `f910282`: research tests 249 of 249, app research tests 55 of 55.
+Commit `ec5cd80` had 240 of 240.
 
 Commit `3871fc5` (round F, private-address refusal, TUFF 8.3.1 merged):
 research tests 231 of 231. The full test suite showed only the known
@@ -117,6 +120,40 @@ cache logging.
 - **Wrong statements:** the election day was given wrongly, and one claim
   about two parties was not backed by the pages.
 
+## Answer fixes after round F (commits ec5cd80 to f910282)
+
+- **`ec5cd80`:** answer requests ask to list each source once, the report
+  notes repeated entries in the answer's own source list, and "Kontext der
+  Quelle" is no longer a false name. Tests 240 of 240.
+- **`20d5b2c`:** a cut-off answer is continued when it fits the window (the
+  room check no longer uses the estimate's safety margin; a refused
+  continuation never shortens the cut-off answer). Live, with the answer
+  limited to 600 tokens, the continuation was sent and served from the
+  server cache.
+- **`a1b9511`:** when a requested rewrite is not kept, the CLI says why
+  ("rewrite not kept: ..."). The figure check accepts rounded whole-number
+  ranges around a page value (32-33 % for 32,3 %) and a full date whose page
+  gives the same day and month without a year (this or next year), and no
+  longer flags phrases such as "Durchsetzung von Wohnungspolitik". Replaying
+  the Spanish-election run: 9 false alarms gone, the 2 real findings (a date
+  attributed to the wrong pages, an invented seat share) remain.
+- **`f910282`:** a symbol or phrase the model repeats at the seam of a
+  continued answer is dropped ("€€" became "€").
+- **Cache at the answer switch:** resolved, not a bug. The request for the
+  answer was served from the cache; requests had been matched to the wrong
+  steps. What costs time is the cold request after each shortening of older
+  results (about 1 minute each). With an exhausted step budget the request
+  for the answer itself can need shortening. Possible tuning later.
+
+## Other servers
+
+- **Plain TUFF 8.3.1:** research works at the same speed and tool calls are
+  fine. But Stop does not stop the plain server's generation: the client
+  exits and the server keeps generating.
+- **llama.cpp (PrismML build, Ternary Bonsai 27B):** tool calls,
+  continuation and Stop work (cancel within 0.4 s). About 2x slower than
+  Qwen, 3.75 GB memory with one 16k slot.
+
 ## Private-address refusal and TUFF 8.3.1 (commit 3871fc5)
 
 - **Tests:** research tests 231 of 231; full suite with only the known
@@ -132,7 +169,7 @@ cache logging.
   (not right before the answer). The request for the answer reused the
   server's cache.
 - **Cut-off answer:** the answer hit the length limit and was not continued,
-  because the room check was too strict. A fix is being prepared.
+  because the room check was too strict. Fixed later in `20d5b2c`.
 
 ## Round B, passages (commit 9a3b93f)
 
@@ -343,22 +380,20 @@ took 46 min 50 s, with no errors.
 
 ## Open points
 
-- **In testing, no Mac results yet:** commit `ec5cd80` (the model is asked to
-  list each source once, the report notes when the answer's own source list
-  repeats entries, and phrases such as "Kontext der Quelle" are no longer
-  flagged as names), and a warning in the garak script about unpinned
+- **Not yet tried on a Mac:** a warning in the garak script about unpinned
   installs.
-- **Cut-off answer not continued.** In the heat-pump run the room check was
-  too strict, so a cut-off answer was kept as it was. Being fixed.
+- **Unread source.** An unread source can still survive in rare cases: the
+  rewrite that would remove it was not kept (the reason is now printed). In
+  the llama.cpp run a cited page that was never read was also flagged.
 - **Passages are not the default.** With `--passages on` more sources were
   read, but Berlin fell to 7 of 30 sources, a half entry appeared where the
   answer was continued, and the Spanish election was presented as held. It
   needs more work before it can be the default.
 - **Cache misses.** Berlin still had 33 miss lines in the last run, and with
-  passages two final requests started cold. In the round F Berlin run the
-  request for the answer was still served without the cache once; the cause
-  is being measured. In the heat-pump run on 8.3.1 it was served from the
-  cache.
+  passages two final requests started cold. The miss at the
+  switch to the answer was not a bug (see above); the cold request after each
+  shortening of older results costs about 1 minute, and tuning is possible
+  later.
 - **Local-network injection page.** The model still follows the hidden
   instruction and asks for private addresses, but `open_page` now refuses
   them itself (5 of 5 resisted on the original set); the sandbox is the

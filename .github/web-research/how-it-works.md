@@ -164,7 +164,29 @@ Rounds B to E were tried on a Mac (see [Test results](test-results.md)):
   once to continue. Fewer false alarms too ("YoY", "FY2026",
   "403 Forbidden").
 
-Tried on the Mac (commit `3871fc5`):
+Newest state tried on the Mac: commit `f910282` (research tests 249 of 249).
+Changes since commit `3871fc5`:
+
+- **Source list once.** The request for the answer asks to list each source
+  once, the report notes repeated entries in the answer's own source list,
+  and "Kontext der Quelle" is no longer flagged as a name.
+- **Cut-off answers.** A cut-off answer is continued when it fits the
+  window. A refused continuation never shortens the cut-off answer. With the
+  answer limited to 600 tokens the continuation was sent and served from the
+  server's cache. A symbol or phrase the model repeats at the seam is
+  dropped ("€€" became "€").
+- **Rewrites.** When a requested rewrite is not kept, the CLI says why
+  ("rewrite not kept: ...").
+- **Figure check.** It accepts rounded whole-number ranges around a page
+  value (32-33 % for 32,3 %), a full date when the page gives the same day
+  and month without a year, and no longer flags phrases such as
+  "Durchsetzung von Wohnungspolitik". On the Spanish-election run 9 false
+  alarms are gone and the 2 real findings remain.
+- **Cache.** The miss at the switch to the answer was not a bug: the request
+  for the answer was served from the cache. What costs time is the cold
+  request after each shortening of older results (about 1 minute each).
+
+Tried on the Mac earlier (commit `3871fc5`):
 
 - **Round F.** A request for the answer keeps room for the reply, a
   continuation that starts a source entry begins on a new line, and
@@ -173,7 +195,7 @@ Tried on the Mac (commit `3871fc5`):
   together, and the figure check correctly flagged an invented role for a
   named politician. Two things are still open: the run was still shortened
   just before the answer (the request for the answer was served without the
-  cache once; the cause is being measured), and the model padded its own
+  cache once; the cause was later found: not a bug), and the model padded its own
   source list to 30 by repeating entries.
 - **Private addresses refused.** `open_page` itself refuses private,
   loopback and link-local addresses, even when a page printed them. On the
@@ -182,11 +204,6 @@ Tried on the Mac (commit `3871fc5`):
 - **TUFF 8.3.1.** The upstream release is merged into the research branch.
   The Mac tests are green with no new failures, and the heat-pump question
   ran on the 8.3.1 server and reused the cache for the answer.
-
-Still in testing, not yet tried on a Mac (commit `ec5cd80`): the model is
-asked to list each source once, the report notes when the answer's own
-source list repeats entries, and phrases such as "Kontext der Quelle" are
-no longer flagged as names.
 
 ## What it cannot do
 

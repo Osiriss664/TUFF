@@ -5,9 +5,9 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `3871fc5` was the last one tested on a Mac; rounds B to F, the
-private-address refusal in `open_page` and the merge of TUFF 8.3.1 were tried
-there. Commit `ec5cd80` is pushed and still in testing). File paths are relative to
+branch (commit `f910282` was the last one tested on a Mac; rounds B to F, the
+private-address refusal in `open_page`, the merge of TUFF 8.3.1 and the later
+answer and figure-check fixes were tried there). File paths are relative to
 that branch.
 
 [Back to the front page](../README.md) ·
@@ -305,7 +305,10 @@ with the same API (for example Ollama) works.
   the HTTP handlers, keeps reading in that state (buffering at most 1 MiB of
   early bytes), so the hang-up closes the channel and cancels the request
   (server log: `cancelled by client … phase=generating`). A client that
-  half-closes its side while waiting is treated as gone.
+  half-closes its side while waiting is treated as gone. Tried with plain
+  TUFF 8.3.1 (without this watcher), Stop ends the client but the server
+  keeps generating; with llama.cpp, Stop cancels within 0.4 s. See
+  [Other servers](test-results.md#other-servers).
 
 Tools:
 
