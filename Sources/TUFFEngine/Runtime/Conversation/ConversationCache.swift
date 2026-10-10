@@ -228,9 +228,11 @@ public enum ConversationCache {
             return entry == nil ? .miss(.noEntry) : .miss(.unusableEntry)
         }
         guard let requestIdentities = transcript.imageIdentities else {
+            logConversationCacheMiss("request carried images without identity")
             return .miss(.missingImageIdentity)
         }
         guard let entryIdentities = entry.transcript.imageIdentities else {
+            logConversationCacheMiss("cached entry carried images without identity")
             return .miss(.missingImageIdentity)
         }
 
@@ -256,6 +258,10 @@ public enum ConversationCache {
         guard requestIdentities.count == messages.count,
               requestIdentities.prefix(inputCount).elementsEqual(entryIdentities),
               requestIdentities[inputCount].isEmpty else {
+            logConversationCacheMiss(
+                "images diverged: request has \(requestIdentities.count) image lists for "
+                + "\(messages.count) messages, or the images of the first \(inputCount) "
+                + "messages or of the cached assistant turn changed")
             return .miss(.imagesDiverged)
         }
         // The text bridges cannot render an image, so a continuation carrying
@@ -266,6 +272,9 @@ public enum ConversationCache {
         if !requestIdentities.dropFirst(inputCount).allSatisfy(\.isEmpty) {
             guard allowsTextBridge,
                   entry.assistantTurn.rawStopReason == .endOfTurn else {
+                logConversationCacheMiss(
+                    "image continuation refused: textBridge=\(allowsTextBridge) "
+                    + "stop=\(entry.assistantTurn.rawStopReason)")
                 return .miss(.unsupportedContinuation)
             }
             return .renderThenResume(cachedPromptTokens: entry.kvPosition)
@@ -275,13 +284,56 @@ public enum ConversationCache {
             // A caller may require an exact rendered prefix for ordinary
             // follow-ups, for example when the cached tokens hold reasoning a
             // fresh render would leave out.
-            guard allowsTextBridge else { return .miss(.unsupportedContinuation) }
+            guard allowsTextBridge else {
+                logConversationCacheMiss(
+                    "text bridge is off for this request (reasoning=\(transcript.reasoning), "
+                    + "preserveThinking=\(transcript.preserveThinking), "
+                    + "effort=\(String(describing: transcript.reasoningEffort))) and the "
+                    + "exact rendered prefix did not match: "
+                    + prefixDivergence(renderedPromptIDs: renderedPromptIDs,
+                                       cachedTokenIDs: entry.kvBackedTokenIDs,
+                                       kvPosition: entry.kvPosition,
+                                       imagesPresent: !requestIdentities.allSatisfy(\.isEmpty)
+                                           || !entryIdentities.allSatisfy(\.isEmpty)))
+                return .miss(.unsupportedContinuation)
+            }
             return matchTextContinuation(entry: entry, continuation: continuation,
                                          tokenizer: tokenizer, modelVariant: modelVariant,
                                          reasoning: transcript.reasoning)
         }
         return matchToolContinuation(entry: entry, transcript: transcript,
                                      continuation: continuation, tokenizer: tokenizer)
+    }
+
+    /// Where a freshly rendered prompt stops agreeing with the cached tokens,
+    /// with a few ids on both sides of the first difference. Tells a changed
+    /// re-tokenization of the answer from a think block the render drops.
+    /// Only called inside the autoclosure of `logConversationCacheMiss`.
+    static func prefixDivergence(renderedPromptIDs: [Int32]?, cachedTokenIDs: [Int32],
+                                 kvPosition: Int, imagesPresent: Bool = false,
+                                 window: Int = 4) -> String {
+        guard let rendered = renderedPromptIDs else {
+            return "rendered prompt nil (multimodal request), kvPosition=\(kvPosition)"
+        }
+        var line = "rendered=\(rendered.count) kvPosition=\(kvPosition)"
+        if imagesPresent { line += " images=present" }
+        let shared = min(rendered.count, cachedTokenIDs.count)
+        var index = 0
+        while index < shared, rendered[index] == cachedTokenIDs[index] { index += 1 }
+        if index == shared {
+            if rendered.count <= cachedTokenIDs.count {
+                return line + " rendered prompt shorter: it ends at \(rendered.count), "
+                    + "at or inside the cached tokens"
+            }
+            return line + " no difference in the first \(shared) tokens"
+        }
+        func slice(_ ids: [Int32]) -> String {
+            let lower = max(0, index - window)
+            let upper = min(ids.count, index + window + 1)
+            return ids[lower..<upper].map(String.init).joined(separator: ",")
+        }
+        return line + " first difference at token \(index): rendered[\(slice(rendered))] "
+            + "cached[\(slice(cachedTokenIDs))]"
     }
 
     /// Which part of the entry guard failed. Kept beside the guard so a new
