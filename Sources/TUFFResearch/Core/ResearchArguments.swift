@@ -103,6 +103,11 @@ public struct ResearchArguments: Equatable, Sendable {
     /// or `nonce` (a random code per run). Not an option and not shown in the app.
     public static let markersVariable = "TUFF_RESEARCH_MARKERS"
 
+    /// The environment variable that names a file for the messages of the
+    /// first request for the answer, for measuring what the model read.
+    /// Off when not set. Not an option and not shown in the app.
+    public static let dumpAnswerRequestVariable = "TUFF_RESEARCH_DUMP_ANSWER_REQUEST"
+
     public static func parse(_ arguments: [String],
                              environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> ResearchArguments {
@@ -120,6 +125,9 @@ public struct ResearchArguments: Equatable, Sendable {
                 throw ResearchArgumentError("\(markersVariable) must be fixed or nonce")
             }
             parsed.options.markers = mode
+        }
+        if let path = environment[dumpAnswerRequestVariable], !path.isEmpty {
+            parsed.options.dumpAnswerRequestPath = path
         }
         var words: [String] = []
         var index = 0
