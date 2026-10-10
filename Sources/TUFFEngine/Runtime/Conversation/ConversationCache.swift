@@ -103,9 +103,33 @@ public struct ConversationCacheEntry: Sendable, Equatable {
     /// orders the search and decides which entry a new one replaces; a match
     /// is always established from tokens and messages.
     public let conversationKey: String?
+    /// Points inside this KV a runner can return to, shortest first: where
+    /// the system prompt and tools end, and where the current user turn
+    /// began. A later request whose fresh render starts with exactly one of
+    /// these token runs resumes there instead of from scratch, even when the
+    /// template rewrites what came after it or it is another conversation.
+    public var prefixCheckpoints: [ConversationPrefixCheckpoint] = []
 
     public var inputMessages: [GFTokenizer.Message] { transcript.messages }
     public var tools: [GFTokenizer.FunctionDefinition] { transcript.tools }
+}
+
+/// A runner checkpoint and the KV tokens before it.
+public struct ConversationPrefixCheckpoint: Sendable, Equatable {
+    public let tokenIDs: [Int32]
+    public let snapshot: RunnerStateSnapshot
+
+    public init?(tokenIDs: [Int32], snapshot: RunnerStateSnapshot) {
+        guard !tokenIDs.isEmpty, snapshot.position == tokenIDs.count else { return nil }
+        self.tokenIDs = tokenIDs
+        self.snapshot = snapshot
+    }
+
+    public var position: Int { tokenIDs.count }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.tokenIDs == rhs.tokenIDs && lhs.snapshot === rhs.snapshot
+    }
 }
 
 /// Why a prefix could not be reused. A bridge that fails to render is a
@@ -160,7 +184,8 @@ public enum ConversationCache {
         calls: [ParsedToolCall],
         result: RawDecodeResult,
         stopStringFiltered: Bool = false,
-        conversationKey: String? = nil
+        conversationKey: String? = nil,
+        prefixCheckpoints: [ConversationPrefixCheckpoint] = []
     ) -> ConversationCacheEntry? {
         guard result.kvPosition == result.kvBackedTokenIDs.count,
               !result.kvBackedTokenIDs.isEmpty,
@@ -168,7 +193,11 @@ public enum ConversationCache {
               !stopStringFiltered,
               result.reason == .endOfTurn
                 || result.reason == .toolCalls
-                || result.reason == .maxTokens else {
+                || result.reason == .maxTokens
+                // Harmony's `<|return|>` ends a turn as an EOS. Only a
+                // checkpoint can continue past it, and it never reads the
+                // generated tokens, so such an entry is kept only with one.
+                || (result.reason == .eos && !prefixCheckpoints.isEmpty) else {
             // A rejected publish leaves nothing for the next request to match,
             // so a single event reads as a permanently dead cache.
             logConversationCacheMiss(
@@ -196,7 +225,21 @@ public enum ConversationCache {
             kvBackedTokenIDs: result.kvBackedTokenIDs,
             uncommittedBoundaryTokenIDs: result.uncommittedBoundaryTokenIDs,
             kvPosition: result.kvPosition,
-            conversationKey: conversationKey)
+            conversationKey: conversationKey,
+            prefixCheckpoints: validCheckpoints(prefixCheckpoints, result: result))
+    }
+
+    /// The checkpoints that lie inside the KV this result describes, one per
+    /// position, shortest first.
+    static func validCheckpoints(_ checkpoints: [ConversationPrefixCheckpoint],
+                                 result: RawDecodeResult) -> [ConversationPrefixCheckpoint] {
+        var byPosition: [Int: ConversationPrefixCheckpoint] = [:]
+        for checkpoint in checkpoints
+        where checkpoint.position < result.kvPosition
+            && result.kvBackedTokenIDs.starts(with: checkpoint.tokenIDs) {
+            byPosition[checkpoint.position] = byPosition[checkpoint.position] ?? checkpoint
+        }
+        return byPosition.values.sorted { $0.position < $1.position }
     }
 
     /// Whether `transcript` continues `entry`, and with which prompt.
@@ -212,6 +255,61 @@ public enum ConversationCache {
         tokenizer: GFTokenizer,
         modelVariant: ModelVariant? = nil,
         allowsTextBridge: Bool = true
+    ) -> ConversationCacheMatch {
+        let continuation = matchContinuation(
+            entry: entry, domain: domain, transcript: transcript,
+            renderedPromptIDs: renderedPromptIDs, tokenizer: tokenizer,
+            modelVariant: modelVariant, allowsTextBridge: allowsTextBridge)
+        guard !continuation.isHit,
+              let checkpointHit = matchCheckpoint(
+                entry: entry, domain: domain, transcript: transcript,
+                renderedPromptIDs: renderedPromptIDs) else {
+            return continuation
+        }
+        return checkpointHit
+    }
+
+    /// Resumes from the entry's checkpoint when the fresh render starts with
+    /// exactly the tokens before it. This is the only reuse that shortens
+    /// the KV, so it is the hit whose cached count is below `kvPosition`.
+    /// Harmony needs it after a final answer: the next render drops that
+    /// turn's reasoning, so the generated tokens are never a prefix of it,
+    /// but everything up to where the turn began still is.
+    static func matchCheckpoint(
+        entry: ConversationCacheEntry?,
+        domain: ConversationCacheDomain,
+        transcript: ConversationTranscript,
+        renderedPromptIDs: [Int32]?
+    ) -> ConversationCacheMatch? {
+        guard let entry, let renderedPromptIDs,
+              entry.domain == domain,
+              ConversationCacheIdentity.tools(entry.transcript.tools, transcript.tools),
+              entry.transcript.reasoning == transcript.reasoning,
+              entry.transcript.reasoningEffort == transcript.reasoningEffort,
+              entry.transcript.harmonyCurrentDate == transcript.harmonyCurrentDate,
+              entry.transcript.preserveThinking == transcript.preserveThinking,
+              let requestIdentities = transcript.imageIdentities,
+              requestIdentities.allSatisfy(\.isEmpty),
+              entry.transcript.imageIdentities?.allSatisfy(\.isEmpty) == true,
+              let checkpoint = entry.prefixCheckpoints.last(where: {
+                  $0.position < entry.kvPosition
+                      && renderedPromptIDs.count > $0.position
+                      && renderedPromptIDs.starts(with: $0.tokenIDs)
+              }) else {
+            return nil
+        }
+        return .hit(effectivePromptIDs: renderedPromptIDs,
+                    cachedPromptTokens: checkpoint.position)
+    }
+
+    static func matchContinuation(
+        entry: ConversationCacheEntry?,
+        domain: ConversationCacheDomain,
+        transcript: ConversationTranscript,
+        renderedPromptIDs: [Int32]?,
+        tokenizer: GFTokenizer,
+        modelVariant: ModelVariant?,
+        allowsTextBridge: Bool
     ) -> ConversationCacheMatch {
         guard let entry,
               entry.domain == domain,
@@ -462,12 +560,9 @@ public enum ConversationCache {
                 incomingMessages: transcript.messages,
                 tools: transcript.tools,
                 reasoning: transcript.reasoning,
-                preserveThinking: transcript.preserveThinking)
-        } catch GFTokenizerError.unsupportedForDialect(let operation) {
-            // Harmony has no tool-result bridge yet: an expected miss, not a
-            // template that disagrees with the cached turn.
-            logConversationCacheMiss("tool-result bridge unsupported: \(operation)")
-            return .miss(.unsupportedContinuation)
+                preserveThinking: transcript.preserveThinking,
+                reasoningEffort: transcript.reasoningEffort,
+                harmonyCurrentDate: transcript.harmonyCurrentDate)
         } catch {
             logConversationCacheMiss("tool-result bridge failed to encode: \(error)")
             return .miss(.bridgeRenderFailed)

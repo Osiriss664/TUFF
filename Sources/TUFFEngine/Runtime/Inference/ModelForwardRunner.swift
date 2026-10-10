@@ -226,6 +226,10 @@ public final class ModelForwardRunner: ChunkedPrefillRunner,
         }
     }
 
+    func selectHead(pureGreedy: Bool) {
+        if case .affine(let runner) = backend { runner.selectHead(pureGreedy: pureGreedy) }
+    }
+
     public var totalIoNanos: UInt64 {
         switch backend {
         case .affine(let runner): return runner.totalIoNanos
@@ -376,5 +380,26 @@ extension ModelForwardRunner: StateSnapshottingRunner {
         case .affine(let runner): try runner.restoreState(snapshot)
         case .gptOss(let runner): try runner.restoreState(snapshot)
         }
+    }
+}
+
+extension ModelForwardRunner: PrefixCheckpointingRunner {
+    public var supportsPrefixCheckpoints: Bool {
+        if case .gptOss = backend { return true }
+        return false
+    }
+
+    public func capturePrefixCheckpoint() throws -> RunnerStateSnapshot {
+        guard case .gptOss(let runner) = backend else {
+            throw RunnerStateSnapshotError.unsupported("prefix checkpoints are GPT-OSS only")
+        }
+        return try runner.capturePrefixCheckpoint()
+    }
+
+    public func rewind(to checkpoint: RunnerStateSnapshot) throws {
+        guard case .gptOss(let runner) = backend else {
+            throw RunnerStateSnapshotError.unsupported("prefix checkpoints are GPT-OSS only")
+        }
+        try runner.rewind(to: checkpoint)
     }
 }
