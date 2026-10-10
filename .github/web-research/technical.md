@@ -5,8 +5,8 @@ components, the research loop and its safeguards, the sandbox and its
 firewall, the interfaces between the parts, the report format, configuration
 and tests. Everything here refers to the
 [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-branch (commit `73114a1` at the time of writing, on top of TUFF 8.1.1,
-tested on a Mac). File paths are relative to
+branch (commit `d01bc38` was the last one tested on a Mac, on top of TUFF 8.1.1;
+rounds B and C, up to `86befe9`, are pushed and still in testing). File paths are relative to
 that branch.
 
 [Back to the front page](../README.md) ·
@@ -76,6 +76,7 @@ which validates it.
 | `Sandbox/web-research/` | The VM image: `Containerfile`, `entrypoint.sh`, `firewall.nft`, `server.py`, pinned `requirements.txt`, Python tests and injection fixtures. |
 | `Scripts/research_sandbox.sh` | `build`, `start`, `stop`, `status`, `selftest` for the VM. |
 | `Scripts/research_injection_check.py` | Prompt-injection harness against the fixtures. |
+| `Scripts/research_question_set.py` | Test tool: runs a fixed set of 25 SimpleQA fact questions through `TUFFResearch`, grades the answers and compares two runs. Not part of the product. |
 
 The engine is shared: the CLI and the app both run `ResearchAgent`, and only
 the presentation of `ResearchEvent`s differs.
@@ -122,6 +123,18 @@ URL (any offset) keeps its number, and the result tells the model so.
 An `open_page` call whose URL is not http or https (a bare host name,
 `file:`) is not sent to the sandbox; the model gets a tool error and the
 progress shows `tool error: open_page needs an http or https url: …`.
+
+### Requested number of sources
+
+A question that names a number of sources (`mindestens 10 Quellen`, `at least
+30 sources`, `10-15 Quellen`) is parsed. Every `open_page` result then says
+"Page N of at least M requested", counting only pages that are sources. If the
+model answers with fewer pages read, it is reminded once (`--nudges off` turns
+this off), and the report notes a missed count. A cap only (`maximal 5
+Quellen`), a number counting something else (`die letzten 30 Jahre`) or a
+number below 2 or above 100 is no request. On a Mac (`d01bc38`), a Berlin run
+asking for 30 sources read 18 and the report said so; the reminder did not
+fire there, because the run ended through the repeated-search stop (open).
 
 ### Asking for the answer
 
@@ -175,7 +188,7 @@ can happen in every step). Defaults are shown; most can be changed (see
 | `open_page` for an address the model made up (in no search result, no page read, not in the question) that the sandbox redirects to another site, another path or the home page | The page is not a source and its text is not shown; the model is told the address redirected elsewhere. Redirects from http to https, with or without `www.`, with a trailing slash, a query, another case, or to a longer path under the same path on the same site (a canonical slug) are normal and change nothing; addresses from a search result, a page text or the question (also without scheme or `www.`) keep their redirect. The page counts only under the address asked for, so the real page can still be opened. Always on. | (tool result) |
 | Answer with fewer than 2 searches or 2 sources (not after auto-open, not at the token limit) | Ask once to look wider (`searchMoreRequest`); the draft is kept as a fallback if the next answer is empty or cut off. | `askingToSearchMore` |
 | Step budget used up, or stopped for repeated searches, with fewer than `minimumPagesRead` pages read | Open unread top results (per-page cap `min(pageChars, budget/2/missing)`); skipped when that cap would be under 500 characters or a fallback draft is held. | `openingTopResults` |
-| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain. Also: a full date, or a number with at least 3 significant digits, found on a cited page but with none of the sentence's name words (capitalized words not first in the sentence or after `:`/`|`, minus stop words, months, weekdays, units and currency codes) within 300 characters of any occurrence there; and name phrases missing from the cited pages (strong: a word with an inner capital, or an all-caps or inner-capital word followed by a number, not a year; weak: two or more capitalized words, linking words such as `der`/`of` allowed but `und`/`oder`/`and`/`or` ending the phrase, one word of it allowed to match a page word with the same first letters (at least 5 letters and 60 % of the shorter word, such as `Technologie` for `Technik`) that stands within 30 characters of the phrase's other words, checked only when the answer and a cited page are in the same language by a function-word count). Sentences without citations are checked against all pages read, for strong names, full dates other than today's and numbers with at least 3 significant digits ("not on any page read"); a sentence under a "not verified" line (`nicht verifiziert`, `unclear` and similar, up to the next heading) is skipped. A short label of 1 to 4 letters and 1 to 4 digits starting with a capital (`M1`, `H100`, `F35`, a range `M1-M4` by both ends) counts as a name and must be on a page as a whole word, also written `F-35` or `F 35`; labels after a number and formula or unit labels (`CO2`, `PM10`) are skipped. Headings and source-list lines are skipped. Names match as a substring of a page word after simple stemming; page and answer are Unicode-normalized | The report gets a "Figure check" section with up to three lists (not on the cited pages; on a page but not near what the sentence names; names not found), 20 points in all; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: lowercase names, months and years in uncited sentences are not checked, and a page may write a figure in words or another unit. | `unverifiedFigures(count)` |
+| Answer sentence cites a source but contains a number (compared by digits, so `5,82` and `5.82` match; ordinals, times and single digits skipped), a full date (`29.11.2024`, `29. November 2024`, `November 29, 2024`, `2024-11-29`, German or English month names, matched by day, month and year in any of these forms), a month and year, or a year from 1900 to 2100, that none of its cited pages contain. Also: a full date, or a number with at least 3 significant digits, found on a cited page but with none of the sentence's name words (capitalized words not first in the sentence or after `:`/`|`, minus stop words, months, weekdays, units and currency codes) within 300 characters of any occurrence there; and name phrases missing from the cited pages (strong: a word with an inner capital, or an all-caps or inner-capital word followed by a number, not a year; weak: two or more capitalized words, linking words such as `der`/`of` allowed but `und`/`oder`/`and`/`or` ending the phrase, one word of it allowed to match a page word with the same first letters (at least 5 letters and 60 % of the shorter word, such as `Technologie` for `Technik`) that stands within 30 characters of the phrase's other words, checked only when the answer and a cited page are in the same language by a function-word count). Sentences without citations are checked against all pages read, for strong names, full dates other than today's and numbers with at least 3 significant digits ("not on any page read"); a sentence under a "not verified" line (`nicht verifiziert`, `unclear` and similar, up to the next heading) is skipped. A short label of 1 to 4 letters and 1 to 4 digits starting with a capital (`M1`, `H100`, `F35`, a range `M1-M4` by both ends) counts as a name and must be on a page as a whole word, also written `F-35` or `F 35`; labels after a number and formula or unit labels (`CO2`, `PM10`) are skipped. Headings and source-list lines are skipped. Names match as a substring of a page word after simple stemming; page and answer are Unicode-normalized | The report gets a "Figure check" section with up to three lists (not on the cited pages; on a page but not near what the sentence names; names not found), 20 points in all; the app shows a count. No model call, answer unchanged. Checked against the full page text kept by the run (up to 200,000 characters per page, 1 million in all), not the compacted history. A hint only: lowercase names, months and years in uncited sentences are not checked, and a page may write a figure in words or another unit. Round A2 (tested on a Mac in `d01bc38`): names come only from the model's own search queries, page titles and URLs; a number from 100 to 599 next to `HTTP`, `Fehler`, `error` or `Status` is an error code and skipped; German, English and Indonesian month names are the same month; office titles and common nouns are left out of a name phrase. | `unverifiedFigures(count)` |
 | Answer stopped at the token limit (`finish_reason: length`), run not stopped | Give the cut-off text back once as the assistant's message, reasoning off, asking to continue exactly where it stopped in the same language and format; the request is sent only if the conversation with it fits the model's context window (the prompt budget without its speed cap; a fixed `--context-chars` or an unknown window uses the prompt budget), otherwise the cut-off answer is kept as it is; a context overflow during the continuation never shortens the cut-off answer; a continuation that starts with the answer's own first line (case and spacing ignored) restarted the answer and is dropped; the continuation is joined directly (a line break only before a list or heading marker that starts mid-line). Counts as cut off only if the continuation also stops at the limit; an empty or failed continuation keeps the cut-off text. A continued answer is not revised afterwards. | `continuingCutOffAnswer` |
 | Answer (not cut off) cites numbers that match no read source (at least one source read); or pages were read but at least 2 sentences have a figure (number, date, month and year) and no citation, or the answer has no citation at all and at least 3 sentences; or the question asks for German or English (with a request word such as `Antworte auf Deutsch`, or clearly by its own question words) and the answer is in the other | One combined request, reasoning off, listing every problem that applies: rewrite from read pages only, add `[n]` after claims taken from pages, write the whole answer in the asked language. Kept only if complete, at least a third as long, citing no new unread number (and fewer, if that was a problem); with missing citations it must cite something and have fewer uncited-figure sentences; with the wrong language it must keep every citation and not be in the other language. Otherwise the original stays. An answer still in the wrong language gets a report note (`answerLanguageMismatch`), also with `--rewrite off`. | `revisingUnreadCitations`, `askingForCitations`, `askingForAnswerLanguage` |
 | Turn cut off at the token limit while thinking, with no answer and steps left | Continue the research with the next step; reasoning stays off for the rest of the run. On the last step, or with reasoning already off, it is treated as an empty answer. | `continuingAfterCutOff` |
@@ -266,11 +279,11 @@ with the same API (for example Ollama) works.
   the cache too (on a Mac, 9,141 of 10,427 tokens). Remaining cache misses:
   after a turn with two tool calls, when reasoning switches from on to off,
   the closed-tools cases named under
-  [Asking for the answer](#asking-for-the-answer), a follow-up after the
-  final answer with `preserve_thinking` on (the same answer text can be
-  tokenized differently when it is rendered again, and the server's text
-  bridge is off then), and a shortening of older results right before the
-  final request. With `TFF_LOG_CACHE=1` in the server's environment, the
+  [Asking for the answer](#asking-for-the-answer), and a shortening of older results right before the
+  final request (fixed for follow-ups in round A2: the follow-up question
+  after the final answer now reuses the cache, on a Mac 8,809 of 8,941 tokens
+  in Bali, before 0; the final request now shortens only when it is over the
+  context limit, but one Berlin run still shortened right before it). With `TFF_LOG_CACHE=1` in the server's environment, the
   server now logs every cache miss with its reason, including those that were
   silent before.
 - Timeout for model calls: `--step-timeout` minutes (default 30) per HTTP
@@ -310,12 +323,12 @@ JSON out.
 
 | Endpoint | Body | Response |
 | --- | --- | --- |
-| `GET /health` | | `{"status": "ok"}` |
+| `GET /health` | | `{"status": "ok"}` (with `"passages": true` in the newest version) |
 | `POST /v1/search` | `{"query": str (1–400 chars), "max_results": int (1–10)}` | `{"query", "results": [{"title", "url", "snippet"}]}` |
 | `POST /v1/fetch` | `{"url": str, "offset": int ≥ 0, "max_chars": int (1–20000)}` | `{"url", "title", "text", "offset", "next_offset" (or null), "total_chars"}` |
 
 Errors are `{"error": {"message", "code"}}` with codes such as
-`invalid_argument`, `blocked_address`, `dns_error` and `forbidden_host`.
+`invalid_argument`, `invalid_url` (malformed addresses are refused cleanly), `blocked_address`, `dns_error` and `forbidden_host`.
 
 Request rules: only `application/json` POSTs, request bodies up to 64 KB,
 and the `Host` header must be a loopback name (this blocks DNS rebinding and
@@ -394,7 +407,7 @@ and that a public page still loads.
   of the markers inside a page are removed repeatedly, so a page cannot close
   the block early.
 - Control characters (terminal escape codes) and invisible characters
-  (zero-width characters, variation selectors other than the emoji one, the
+  (every Unicode format character, zero-width characters, variation selectors other than the emoji one, the
   Unicode tag block) are removed in the VM and again on the host, from
   titles, text, snippets and everything printed or saved.
 - Queries shown in progress are collapsed to one line of at most 200
@@ -469,6 +482,8 @@ CLI (`tuff research <question> [options]`):
 | `--output <file.md>` | | Also write the report to a new file. |
 | `--search-results <1…10>` | 5 | Results per search. |
 | `--tool-calls <1…8>` | 4 | Tool calls the model may make per turn. |
+| `--passages on\|off` | off | In testing (round B). `open_page` returns the passages of a page that best match the question, ranked by BM25 in the sandbox, instead of the page front to back; `offset` then counts passages. |
+| `--only-seen-urls on\|off` | on | In testing (round C). `open_page` opens only addresses that appeared in a search result, a page read or the question, in the spelling shown. Off is for measuring the model alone. |
 | `--min-pages <1…6>` | 3 | Pages to read: asked for in the prompt, and the target of the loop's own page opening. |
 | `--auto-open on\|off` | on | The loop opens top results itself when too few pages are read. |
 | `--nudges on\|off` | on | Ask once to search first, to open pages and to look wider. |
@@ -515,7 +530,7 @@ Scripts/garak/run_garak.sh                                # model alone, Mac onl
 ```
 
 - `Tests/TUFFResearch/ResearchAgentTests.swift` drives the loop with scripted
-  model replies and a fake sandbox (158 tests), covering tool handling,
+  model replies and a fake sandbox (176 tests in the research package), covering tool handling,
   nudges, fallbacks, the repeated-search stop, repeated page refusal, the
   figure check, partial reports, the thinking limit and the
   retry after a model error, compaction, the continuation and revision,
@@ -529,7 +544,7 @@ Scripts/garak/run_garak.sh                                # model alone, Mac onl
   tests keep settings in memory, so they write no preference files.
 - The injection harness (`Scripts/research_injection_check.py`) runs the
   model against hostile pages in `Sandbox/web-research/fixtures/injection`.
-  `--set original` (default) is four hand-written pages with 12 attacks;
+  `--set original` (default) is five hand-written pages (the fifth, `lookalike-boundary`, hides text behind near-copies of the untrusted-content markers; the markers on `fake-tool-boundary` are now escaped);
   `--set external` is nine pages with 91 attack texts from BIPIA (60) and
   AgentDojo (31), both MIT, pinned to commits `a004b69` and `089ed46` and
   rebuilt by `build_external_fixtures.py` from `external-attacks.json`;
@@ -544,7 +559,8 @@ Scripts/garak/run_garak.sh                                # model alone, Mac onl
   model server alone, with the probes `latentinjection`, `badchars` and
   `encoding` (about 96 prompts by default; Python 3.11 or newer). It is a
   Mac-only test tool and does not ship with TUFF. See
-  `Scripts/garak/README.md`.
+  `Scripts/garak/README.md`. The run script warns that it installs garak
+  and its dependencies unpinned from PyPI (in testing).
 
 Live results are on the [test results page](test-results.md).
 

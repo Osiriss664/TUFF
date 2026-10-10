@@ -82,7 +82,16 @@ has nothing on your Mac it could use to follow them. See [Safety](safety.md).
    mention, and short labels such as "M1" or "F-35". Sentences without a
    source number are checked against all pages read, for names, full dates
    and longer numbers. This is only a hint: it cannot catch every wrong word,
-   and a page may write a figure in words or in another unit.
+   and a page may write a figure in words or in another unit. The check
+   takes names only from what the model itself used: its search queries, the
+   page titles and the web addresses. It skips HTTP error codes such as 403
+   and knows German, English and Indonesian month names.
+
+If your question asks for a number of sources ("at least 30 sources"), the
+loop notices it. Each page read then shows "Page 12 of at least 30
+requested", the model is reminded once to keep reading if it stops short, and
+the report says when the number was missed. A cap ("at most 5 sources") or a
+number that counts something else ("the last 30 years") is no request.
 
 The number of steps is limited (8 by default, up to 100). When the budget is
 used up, the model has to answer with what it has. The number of pages to
@@ -107,6 +116,7 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
 | Stops in the middle of the answer because it reached its length limit | Asks it once to continue exactly where it stopped, but only if the request still fits the model's context. If the model starts the answer over, that second copy is dropped. |
 | Opens a web address it made up, and that address sends you to another site or the home page | The page does not count as a source and the model is told. Normal forwarding (for example from http to https) is fine. |
+| Answers with fewer pages read than the question asked for | Asks it once to keep reading. If the number is still missed, the report says so. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Gives figures without source numbers, or no source numbers at all | Asks it once to add the source number after every claim taken from a page. |
 | Answers in another language than the question asked for | Asks it once to write the whole answer in the right language. |
@@ -130,6 +140,19 @@ why, and lists the sources and searches so far.
 While a run is going, your Mac does not go to sleep on its own (the screen
 may still turn off, and closing the lid still puts it to sleep). The app
 shows how long a run took as, for example, "19 s", "3 min" or "14 min 5 s".
+
+## In testing
+
+Two further rounds are pushed to the feature branch but have not been tried on
+a Mac yet, so no results are claimed:
+
+- **Relevant passages first.** With `--passages on` (off by default), a page
+  is read as the passages that best match the question, ranked by BM25,
+  instead of front to back.
+- **Stricter page opening.** `open_page` only opens addresses the research
+  showed (in a search result, in a page read or in the question), fetched in
+  the spelling shown. Hidden Unicode format characters are stripped. The app
+  starts a fresh sandbox for each question.
 
 ## What it cannot do
 

@@ -4,7 +4,7 @@ How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
 The five-question comparison was run on 5 October 2026 with the code at commit
 `4a94397`; the automated tests and the checks of the newest changes were run
-on 6 to 10 October 2026 with commits from `3263de4` to `73114a1`, all on the `feature/web-research`
+on 6 to 10 October 2026 with commits from `3263de4` to `d01bc38`, all on the `feature/web-research`
 branch.
 
 [Back to the front page](../README.md) ·
@@ -13,6 +13,15 @@ branch.
 [Technical reference](technical.md)
 
 ## Automated tests
+
+Commit `d01bc38` (round A2 and cache fixes): research loop tests 176 of 176
+(including 13 new figure-check tests, 2 for the source count and 3 for the
+requested-sources loop), research app tests 50 of 50, server tests 21 of 21.
+The full test suite showed only 3 known failures, which also fail on
+unmodified TUFF. Sandbox tests 42 of 43: one test depends on how the machine
+reads the address `0177.0.0.1` (macOS reads it as decimal, the Linux container
+as octal), so it was a test problem, not a hole; it is fixed in the test only.
+The sandbox was rebuilt and its self-test passed.
 
 Commit `73114a1` (on TUFF 8.1.1): research loop tests 158 of 158, research
 app tests 50 of 50, sandbox tests 40 of 40 and the sandbox self-test passed.
@@ -67,6 +76,33 @@ changed so the server can reuse its prompt cache there too.
 - **Spanish election** (`7137b14`): the answer searched only 2023 and 2024
   and presented the 2023 election as the current one; earlier runs found the
   vote of 29 November 2026. The figure check cannot see this.
+
+## Round A2 and cache fixes (commit d01bc38)
+
+Four questions ran with Qwen3.6 35B-A3B, thinking off and default settings,
+on a fresh sandbox and a server with cache logging on. Round A2 changed the
+figure check (names only from the model's own search queries, page titles and
+web addresses; HTTP status codes skipped; Indonesian month names; phrase
+names) and added the requested source count. Two cache fixes came with it.
+
+- **Figure check, replayed on 11 saved pages:** 9 false alarms gone and no
+  real hit lost ("Februari/Agustus", "403", "HTTP 403", a name taken from a
+  web address, a month in a page title).
+- **Figure check in the new runs:** 13 right, 11 false alarms. It caught
+  invented seat counts in the Berlin answer (37, 85 and 81, copied from the
+  model's own search query).
+- **Berlin coalition question** (13 min 5 s, 15 steps, 50 steps allowed): the
+  question asked for at least 30 sources; 18 were read (before: 11) and the
+  report says the number was missed. The reminder did not fire, because the run
+  ended through the repeated-search stop.
+- **Follow-up questions now reuse the cache:** heat pump 12,277 of 12,346
+  tokens, Spain 13,183 of 13,255, Bali 8,809 of 8,941 (before: 0 of 11,198),
+  which saves about a minute per follow-up in Bali.
+- **Other runs:** heat pump 8 min 38 s with 4 sources, Spain 5 min 16 s with 5,
+  Bali 5 min 43 s with 2. All ended normally.
+- **Prompt injection:** the original set, now five pages with the new
+  look-alike-markers page, was resisted 5 of 5. In two the model reported
+  the attempt.
 
 ## TUFF 8.1.1 and round A1 (commits 8a726ad and 73114a1)
 
@@ -196,35 +232,37 @@ took 46 min 50 s, with no errors.
 
 ## Open points
 
-- **Relevant passages first (BM25), kept for later.** Reading only the
-  passages of a page that match the question could make answers better and a
-  little faster. The baseline from earlier logs: page text is about 16 percent
-  of the run time, writing about 65 percent. Not built yet.
-- The prompt cache still misses after a turn with two tool calls, when
-  thinking is switched off during a run, and once when the model keeps
-  trying to search at the end.
-- A follow-up question after the final answer misses the cache when
-  `preserve_thinking` is on, because the same answer text is tokenized
-  differently the second time. A fix is planned.
-- A shortening of older results right before the final request makes that
-  request miss the cache (seen in the Spain run). A fix is planned.
-- With a large requested number of sources (30 to 40), a run can deliver far
-  fewer (11 in the Berlin run) and repeat many searches, without saying that
-  the number was missed.
+- **In testing, not yet run on a Mac:** reading the passages that best match
+  the question first (BM25, `--passages on`, off by default); `open_page`
+  opening only addresses the research showed, in the spelling shown; hidden
+  Unicode format characters stripped; a fresh sandbox for each question in
+  the app; a warning in the garak script about unpinned installs.
+- **Unread citations survive the rewrite.** In the Bali run the answer cited
+  two sources that were never read, and they stayed after the request to
+  rewrite. The figure check skips those sentences, so their figures were not
+  checked. Being fixed.
+- **A shortening of older results right before the final request** still
+  happened once (Berlin), so that request started cold. Being fixed.
+- **The source reminder does not fire** when a run ends through the
+  repeated-search stop (Berlin: 18 of 30 requested sources). The report does
+  say the number was missed. Being fixed.
+- **Figure check false alarms:** "(403-Fehler)" with a hyphen and descriptive
+  phrases such as "Nutzung von WP" or "Verlust der CDU" are still flagged as
+  names. Being fixed for the error code. Accepting similar words could let a
+  near-miss such as "Bundesrat" for "Bundestag" through.
 - The figure check does not notice a figure that is on the page but belongs
   to something else (a seat count of 143); a stricter rule for this gave only
-  false alarms. It also flags months and names that are only in a page's
-  title or address, error codes such as 403, descriptive phrases such as
-  "Nutzung von WP" or "Verlust der CDU" as names, and source names taken from
-  a web address. Accepting similar words could let a near-miss such as
-  "Bundesrat" for "Bundestag" through.
+  false alarms.
 - Lowercase names are not checked by the figure check.
 - Figures in sentences without a source number are only checked if they are
   full dates or have three or more digits; months, years and short numbers
   are not.
+- The prompt cache still misses after a turn with two tool calls, when
+  thinking is switched off during a run, and once when the model keeps
+  trying to search at the end.
 - On the local-network injection page the model followed the hidden
-  instruction and asked for private addresses. The sandbox blocked them all,
-  but the model itself did not resist.
+  instruction and asked for private addresses (commit `6effb41`). The sandbox
+  blocked them all, but the model itself did not resist.
 - The model alone (garak) often follows instructions hidden in documents.
   The two-tools design and the sandbox limit what it could do with them.
 - Gemma 4 26B once answered on its very last step without having read a

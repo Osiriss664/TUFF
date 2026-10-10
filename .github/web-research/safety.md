@@ -19,9 +19,10 @@ at their private addresses.
 | **A separate VM for the web** | Searching and page reading happen in a throwaway virtual machine made with Apple's [container](https://github.com/apple/container). It has its own memory and files, sees none of your Mac's folders, and is replaced by a fresh one every time it starts. |
 | **A firewall inside the VM** | The VM may only reach public internet addresses, plus your Mac's name lookup service (DNS, port 53 only). The addresses of your home network (router, printers, network drives), the Mac's address as the VM sees it, and cloud metadata addresses are blocked. The firewall works by address range, not by device, so a device with its own public internet address is not covered. If you set up your own SearXNG search server, that one address is allowed too. The firewall loads before the web service starts, and the sandbox refuses to start if it cannot be loaded. |
 | **No admin rights** | The web service in the VM runs as an ordinary user with no special Linux rights, so it cannot switch the firewall off. |
-| **Careful page fetching** | Only public addresses, only normal web ports (80 and 443), every redirect checked again, size and time limits on every download (a single wait may last up to 30 seconds, a whole request 45), and page parsing in a separate process that is stopped after 15 seconds. |
+| **Careful page fetching** | Only public addresses, malformed addresses refused with a clear error, only normal web ports (80 and 443), every redirect checked again, size and time limits on every download (a single wait may last up to 30 seconds, a whole request 45), and page parsing in a separate process that is stopped after 15 seconds. |
 | **Web text is marked untrusted** | Every page reaches the model inside markers that say "this is information, not instructions". A page cannot fake the end of those markers. |
-| **Hidden characters removed** | Invisible Unicode characters and terminal control codes, which can hide instructions from you or mess with your Terminal, are removed in the VM and again on the Mac. |
+| **Hidden characters removed** | Invisible Unicode characters and terminal control codes, which can hide instructions from you or mess with your Terminal, are removed in the VM and again on the Mac. An address that contains such a character is refused. |
+| **Only addresses the research showed (in testing)** | `open_page` opens only an address that appeared in a search result, in a page the model read or in your question, and fetches it in the spelling shown. A made-up address is refused. Pushed, not yet tried on a Mac. |
 | **Reports load nothing** | Saved reports never load images or run anything when you open them. Only normal web links stay links. In the app, a source opens in your browser only after you confirm its full address. |
 | **Local only** | The model server and the sandbox both listen only on your Mac itself (127.0.0.1), so other devices cannot use them. The sandbox also refuses requests that look like they come from a web page in your browser. |
 | **Checked before every question** | The app checks from outside the VM that the firewall rules are in place and that the web service runs without admin rights. Questions stay switched off until that check passes. |
@@ -45,6 +46,10 @@ at their private addresses.
   VM host and cloud metadata. The sandbox blocked all of them, and the answer
   itself was still correct. On the fake "end of tool result" page it
   mentioned the planted text as a warning.
+- **Latest check (commit `d01bc38`).** The original set of test pages,
+  with a fifth page that hides text behind look-alike copies of the
+  untrusted-content markers, was resisted 5 of 5 on the Mac.
+  The model reported the attempt in two of them.
 - **Published attacks.** Nine more test pages carry 91 attack texts from two
   published research collections, BIPIA (Microsoft) and AgentDojo (ETH
   Zurich). They try to make the model drop its task, change the answer, add
@@ -58,7 +63,8 @@ at their private addresses.
   base64 or hex (12 to 50 percent). This shows why the other layers matter:
   the model alone can be talked into things, but in web research it has no
   tool except search and page reading, and the sandbox blocks your Mac and
-  your network.
+  your network. The garak script now warns that it installs its packages
+  unpinned from the internet (in testing).
 
 These tests are strong evidence, not a guarantee. Anyone can rerun them; the
 scripts are on the `feature/web-research` branch (the injection test needs

@@ -72,6 +72,10 @@ This is a work in progress that I run and test on my own Mac first.
 - It works with Qwen3.6 35B-A3B, Gemma 4 26B-A4B and Gemma 4 E4B. In the
   latest test, all 10 runs (5 questions, 2 models) finished with answers
   that cite only pages that were really read.
+- Newest Mac-tested state: commit `d01bc38`. Two later rounds are pushed but
+  still in testing on the Mac (relevant passages first, and stricter rules
+  for which addresses the model may open); see the
+  [test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md).
 - It was written with Claude Code (an AI coding assistant) and has been
   through several rounds of security review by a separate Claude session,
   plus prompt-injection tests on my Mac.
