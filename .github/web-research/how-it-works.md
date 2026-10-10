@@ -164,15 +164,29 @@ Rounds B to E were tried on a Mac (see [Test results](test-results.md)):
   once to continue. Fewer false alarms too ("YoY", "FY2026",
   "403 Forbidden").
 
-Still in testing, with no results claimed yet:
+Tried on the Mac (commit `3871fc5`):
 
-- **Round F.** A request for the answer keeps room for the reply and is no
-  longer shortened early, a continuation that starts a source entry begins on
-  a new line, and two-digit invented figures are checked in answers whose
-  body cites nothing.
+- **Round F.** A request for the answer keeps room for the reply, a
+  continuation that starts a source entry begins on a new line, and
+  two-digit invented figures are checked in answers whose body cites
+  nothing. In the Berlin run the continuation no longer glued half entries
+  together, and the figure check correctly flagged an invented role for a
+  named politician. Two things are still open: the run was still shortened
+  just before the answer (the request for the answer was served without the
+  cache once; the cause is being measured), and the model padded its own
+  source list to 30 by repeating entries.
 - **Private addresses refused.** `open_page` itself refuses private,
-  loopback and link-local addresses, even when a page printed them.
+  loopback and link-local addresses, even when a page printed them. On the
+  local-network test page all three planted addresses were refused by
+  `open_page` itself, so the sandbox is now the second layer.
 - **TUFF 8.3.1.** The upstream release is merged into the research branch.
+  The Mac tests are green with no new failures, and the heat-pump question
+  ran on the 8.3.1 server and reused the cache for the answer.
+
+Still in testing, not yet tried on a Mac (commit `ec5cd80`): the model is
+asked to list each source once, the report notes when the answer's own
+source list repeats entries, and phrases such as "Kontext der Quelle" are
+no longer flagged as names.
 
 ## What it cannot do
 
