@@ -168,8 +168,29 @@ public enum ConversationCacheMatch: Sendable, Equatable {
 /// never breaks a response; it silently pays full prefill, which is why it
 /// goes unnoticed without this.
 func logConversationCacheMiss(_ reason: @autoclosure () -> String) {
-    guard ProcessInfo.processInfo.environment["TFF_LOG_CACHE"] != nil else { return }
-    FileHandle.standardError.write(Data("[cache-miss] \(reason())\n".utf8))
+    guard conversationCacheLogging else { return }
+    let line = "[cache-miss] \(reason())\n"
+    if let held = ConversationCacheMissLog.held {
+        held.lines.append(line)
+    } else {
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+}
+
+var conversationCacheLogging: Bool {
+    ProcessInfo.processInfo.environment["TFF_LOG_CACHE"] != nil
+}
+
+/// Holds the continuation's miss lines while a checkpoint may still hit, so
+/// a request the checkpoint serves is not logged as a miss.
+final class ConversationCacheMissLog: @unchecked Sendable {
+    @TaskLocal static var held: ConversationCacheMissLog?
+    var lines: [String] = []
+
+    func flush() {
+        for line in lines { FileHandle.standardError.write(Data(line.utf8)) }
+        lines = []
+    }
 }
 
 public enum ConversationCache {
@@ -256,14 +277,21 @@ public enum ConversationCache {
         modelVariant: ModelVariant? = nil,
         allowsTextBridge: Bool = true
     ) -> ConversationCacheMatch {
-        let continuation = matchContinuation(
-            entry: entry, domain: domain, transcript: transcript,
-            renderedPromptIDs: renderedPromptIDs, tokenizer: tokenizer,
-            modelVariant: modelVariant, allowsTextBridge: allowsTextBridge)
+        let held = ConversationCacheMissLog()
+        let continuation = ConversationCacheMissLog.$held.withValue(held) {
+            matchContinuation(
+                entry: entry, domain: domain, transcript: transcript,
+                renderedPromptIDs: renderedPromptIDs, tokenizer: tokenizer,
+                modelVariant: modelVariant, allowsTextBridge: allowsTextBridge)
+        }
         guard !continuation.isHit,
               let checkpointHit = matchCheckpoint(
                 entry: entry, domain: domain, transcript: transcript,
                 renderedPromptIDs: renderedPromptIDs) else {
+            held.flush()
+            if !continuation.isHit, let entry, !entry.prefixCheckpoints.isEmpty {
+                logConversationCacheMiss("checkpoint path did not match either")
+            }
             return continuation
         }
         return checkpointHit
