@@ -105,7 +105,8 @@ Local models sometimes take shortcuts. The loop catches the common ones:
 | Spends two steps in a row only repeating searches or page reads it already did | Stops the research there and asks for the answer, so no steps are wasted. The report notes the early stop. |
 | Answers after only one search or one page | Asks it once to look wider: other words, another language, another source. |
 | Runs out of steps, or is stopped that way, with fewer than three pages read | Opens more top results before the final answer. |
-| Stops in the middle of the answer because it reached its length limit | Asks it once to continue exactly where it stopped. |
+| Stops in the middle of the answer because it reached its length limit | Asks it once to continue exactly where it stopped, but only if the request still fits the model's context. If the model starts the answer over, that second copy is dropped. |
+| Opens a web address it made up, and that address sends you to another site or the home page | The page does not count as a source and the model is told. Normal forwarding (for example from http to https) is fine. |
 | Cites a source number for a page it never opened | Asks it once to rewrite the answer using only pages it read. Claims it cannot back up are dropped or marked as not verified. |
 | Gives figures without source numbers, or no source numbers at all | Asks it once to add the source number after every claim taken from a page. |
 | Answers in another language than the question asked for | Asks it once to write the whole answer in the right language. |

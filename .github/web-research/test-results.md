@@ -4,7 +4,7 @@ How well does a model on a normal Mac actually research? These are real runs
 on a MacBook Air M5 with 16 GB of memory and macOS 26, one model at a time.
 The five-question comparison was run on 5 October 2026 with the code at commit
 `4a94397`; the automated tests and the checks of the newest changes were run
-on 6 to 9 October 2026 with commits from `3263de4` to `3a36f1d`, all on the `feature/web-research`
+on 6 to 10 October 2026 with commits from `3263de4` to `73114a1`, all on the `feature/web-research`
 branch.
 
 [Back to the front page](../README.md) ·
@@ -13,6 +13,13 @@ branch.
 [Technical reference](technical.md)
 
 ## Automated tests
+
+Commit `73114a1` (on TUFF 8.1.1): research loop tests 158 of 158, research
+app tests 50 of 50, sandbox tests 40 of 40 and the sandbox self-test passed.
+The full test suite showed only the known failures that were there before.
+
+Commit `8a726ad` (the merge with TUFF 8.1.1): research loop tests 148 of 148
+and research app tests 50 of 50 passed.
 
 Commit `3a36f1d`: research loop tests 142 of 142 and research app tests
 45 of 45 passed.
@@ -60,6 +67,41 @@ changed so the server can reuse its prompt cache there too.
 - **Spanish election** (`7137b14`): the answer searched only 2023 and 2024
   and presented the 2023 election as the current one; earlier runs found the
   vote of 29 November 2026. The figure check cannot see this.
+
+## TUFF 8.1.1 and round A1 (commits 8a726ad and 73114a1)
+
+The research branch moved from TUFF 7.3.0 to 8.1.1. Then a round of fixes for
+cut-off answers, made-up addresses and step sizes followed. Both were tried
+with Qwen3.6 35B-A3B, thinking off and default settings, on a server with
+cache logging on.
+
+- **After the 8.1.1 merge** (`8a726ad`): Bali took 6 min 33 s and ended
+  normally, the heat pump 6 min 39 s. `preserve_thinking` is now decided once
+  per run. Left on `auto` (on for Qwen) the cache held in every final
+  request; forced off, two final requests lost the cache (about 40 s each),
+  so `auto` stays the better choice.
+- **Berlin coalition question** (`73114a1`, 9 min 1 s, 14 steps, 50 steps
+  allowed): the answer was cut off at the token limit and, because the
+  continuation would not fit the context, the cut-off answer was kept. The
+  answer no longer appears twice (in an earlier app run of the same question
+  it did). Older results were shortened 2 times (the earlier app run: 38 times
+  in 42 steps). The answer was much better than that run: seat numbers, the
+  coalition arithmetic and names were right, nothing invented. It had only 11
+  sources although 30 to 40 were asked for, and many searches were repeated
+  (13 refused), without a note that the number was missed.
+- **Step sizes** in the Berlin run: smallest 1,444, middle 3,484, largest
+  9,911 characters added per step.
+- **Spanish election:** the vote of 29 November 2026 was treated correctly as
+  upcoming (before, an old election was presented as current).
+- **Figure check:** 22 flags right and 6 false alarms (descriptive phrases and
+  a source name taken from a web address). It found a real mix-up: 32.3
+  percent was called a share "of the seats" but is a share of the votes.
+- **Cache:** the follow-up question after the final answer reused nothing in
+  Bali. The same answer text was tokenized differently when it was rendered
+  again, and the server's text bridge is off when `preserve_thinking` is on.
+  In Spain, older results were shortened right before the final request, so
+  that request also started cold. A fix is planned for both. The heat-pump
+  follow-up reused 11,704 of 11,776 tokens.
 
 ## Answer fixes and attack tests (commits 8475834 and 6effb41)
 
@@ -161,14 +203,21 @@ took 46 min 50 s, with no errors.
 - The prompt cache still misses after a turn with two tool calls, when
   thinking is switched off during a run, and once when the model keeps
   trying to search at the end.
+- A follow-up question after the final answer misses the cache when
+  `preserve_thinking` is on, because the same answer text is tokenized
+  differently the second time. A fix is planned.
+- A shortening of older results right before the final request makes that
+  request miss the cache (seen in the Spain run). A fix is planned.
+- With a large requested number of sources (30 to 40), a run can deliver far
+  fewer (11 in the Berlin run) and repeat many searches, without saying that
+  the number was missed.
 - The figure check does not notice a figure that is on the page but belongs
   to something else (a seat count of 143); a stricter rule for this gave only
   false alarms. It also flags months and names that are only in a page's
-  title or address, error codes such as 403, and phrases such as "Nutzung
-  von WP" as names. Accepting similar words could let a near-miss such as
+  title or address, error codes such as 403, descriptive phrases such as
+  "Nutzung von WP" or "Verlust der CDU" as names, and source names taken from
+  a web address. Accepting similar words could let a near-miss such as
   "Bundesrat" for "Bundestag" through.
-- A run can miss the newest events: one Spanish election answer searched only
-  older years and presented an old election as the current one.
 - Lowercase names are not checked by the figure check.
 - Figures in sentences without a source number are only checked if they are
   full dates or have three or more digits; months, years and short numbers
