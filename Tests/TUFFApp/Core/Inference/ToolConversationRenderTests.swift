@@ -133,6 +133,13 @@ import TUFFEngine
         request.reasoning = .on
         #expect(!RealInferenceSession.allowsTextBridge(request))
         request.reasoning = .off
+        // Reasoning off: preserve_thinking changes nothing for the bridge.
+        request.preserveThinking = true
+        #expect(RealInferenceSession.allowsTextBridge(request))
+        request.reasoning = .on
+        #expect(!RealInferenceSession.allowsTextBridge(request))
+        request.reasoning = .off
+        request.preserveThinking = false
         request.assistantPrefix = "Partial"
         #expect(!RealInferenceSession.allowsTextBridge(request))
     }

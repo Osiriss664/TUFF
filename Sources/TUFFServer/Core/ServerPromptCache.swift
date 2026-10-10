@@ -17,8 +17,12 @@ extension ValidatedChatRequest {
     /// A text bridge retains generated reasoning that a fresh template render
     /// can drop. Require an exact rendered prefix for completed thinking turns;
     /// tool results continue the same turn and have their own checked bridge.
+    /// With reasoning off nothing was generated that a fresh render could
+    /// drop, so preserve_thinking does not matter: the cached tokens are the
+    /// answer's, and a render of the history only differs by how the answer
+    /// text tokenizes (Qwen with preserve_thinking missed the cache there).
     var allowsTextBridge: Bool {
-        reasoning == .off && !preserveThinking && reasoningEffort == nil
+        reasoning == .off && reasoningEffort == nil
     }
 
     /// The request as the conversation cache sees it. A multimodal request

@@ -125,7 +125,9 @@ struct OpenAIRequestFieldTests {
         #expect(validated.messages[1].thinking == "checked carefully")
         #expect(validated.conversationTranscript.messages[1].thinking == "checked carefully")
         #expect(validated.preserveThinking)
-        #expect(!validated.allowsTextBridge)
+        // Reasoning is off here, so there is no reasoning a render could drop.
+        #expect(validated.reasoning == .off)
+        #expect(validated.allowsTextBridge)
         let ordinary = try OpenAIRequestValidator.validate(try Self.decode(""), modelID: "m")
         #expect(!ordinary.preserveThinking)
         #expect(ordinary.allowsTextBridge)

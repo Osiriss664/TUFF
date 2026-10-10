@@ -542,10 +542,12 @@ actor RealInferenceSession {
     /// the cached tokens hold reasoning a fresh render would drop, so the
     /// next message is matched by an exact rendered prefix instead. Tool
     /// results always continue the KV, because the templates keep the
-    /// in-progress turn's reasoning.
+    /// in-progress turn's reasoning. With reasoning off nothing was generated
+    /// that a fresh render could drop, so `preserveThinking` does not matter
+    /// (same rule as the server's `allowsTextBridge`).
     static func allowsTextBridge(_ request: AppGenerationRequest) -> Bool {
         request.assistantPrefix.isEmpty && request.reasoning == .off
-            && !request.preserveThinking && request.reasoningEffort == nil
+            && request.reasoningEffort == nil
     }
 
     static func retainedConversationBudget(model: Model, key: SessionLoadKey,
