@@ -3519,6 +3519,20 @@ struct ResearchAgentTests {
         #expect(ResearchAgent.State.numericCells("| Einwohner | 3.850.000 |") == 1)
     }
 
+    @Test func extractReadsNoBreakSpacesAndNotesInTableCells() {
+        #expect(ResearchAgent.State.numericCells("| Linke | 25,7\u{00A0}% | 47 (+25) |") == 2)
+        #expect(ResearchAgent.State.numericCells("| Linke | 25,7\u{202F}% | 47[a] |") == 2)
+        // A party under the threshold that comes before the first two-figure
+        // row is a row, not the header.
+        let rows = ["| Partei | Stimmen | Sitze |", "| BSW | 4,7 % | – |",
+                    "| CDU | 18,8 % | 34 |", "| Linke | 25,7 % | 47 |"]
+        let body = (["Wahlergebnis"] + rows).joined(separator: "\n")
+        let kept = ResearchAgent.State.extract(body, limit: 300, stems: [])
+        #expect(kept.contains("| Partei | Stimmen | Sitze |"))
+        #expect(kept.contains("| BSW | 4,7 % | – |"))
+        #expect(kept.contains("| Linke | 25,7 % | 47 |"))
+    }
+
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {
         let body = "Title line\nnothing here\nZeitungen in Berlin\nmore filler\nBerlin only"
         let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["berlin", "zeitun"])

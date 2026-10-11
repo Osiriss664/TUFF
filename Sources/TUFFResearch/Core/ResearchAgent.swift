@@ -3734,9 +3734,15 @@ public struct ResearchAgent: Sendable {
                 var tableCharacters = 0
                 var start = unit.rows[0]
                 if unit.figure {
-                    start = unit.rows.first { numericCells(parts[$0]) >= 2 } ?? start
-                    if let headerIndex = unit.rows.last(where: {
-                        $0 < start && parts[$0].contains { $0.isLetter } }) {
+                    // The header is the last row of text before the first row of
+                    // figures; rows between them (a party under the threshold
+                    // that comes first) are rows too.
+                    let firstData = unit.rows.first { numericCells(parts[$0]) >= 2 } ?? start
+                    let headerIndex = unit.rows.last(where: {
+                        $0 < firstData && numericCells(parts[$0], ignoringNotes: false) == 0
+                            && parts[$0].contains { $0.isLetter } })
+                    start = headerIndex.map { $0 + 1 } ?? firstData
+                    if let headerIndex {
                         let header = compactHeader(parts[headerIndex])
                         if header.count <= limit / 4, header.count <= limit - used - 3 {
                             chosen[headerIndex] = header
@@ -3778,11 +3784,17 @@ public struct ResearchAgent: Sendable {
         }
 
         /// How many cells of a table row are numbers (`47`, `25,7 %`, `+13,5`).
-        static func numericCells(_ row: String) -> Int {
+        static func numericCells(_ row: String, ignoringNotes: Bool = true) -> Int {
             row.split(separator: "|").filter { cell in
-                let text = cell.trimmingCharacters(in: .whitespaces)
+                // A note in brackets (`47 (+25)`, `47[a]`) does not make a
+                // cell text; spaces include the no-break kinds pages use.
+                let text = ignoringNotes
+                    ? String(cell).replacingOccurrences(
+                        of: #"\s*[\(\[][^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+                        .trimmingCharacters(in: .whitespaces)
+                    : String(cell).trimmingCharacters(in: .whitespaces)
                 return text.contains { $0.isNumber }
-                    && text.allSatisfy { $0.isNumber || " ,.%+-\u{2212}\u{2013}".contains($0) }
+                    && text.allSatisfy { $0.isNumber || $0.isWhitespace || ",.%+-\u{2212}\u{2013}".contains($0) }
             }.count
         }
 
