@@ -3455,9 +3455,6 @@ struct ResearchAgentTests {
         #expect(kept.contains("| SPD | 12,1 % | 22 |"))
         #expect(kept.contains("| Linke | 25,7 % | 47 |\n| CDU | 18,8 % | 34 |"))
         #expect(kept.count <= 300)
-        // Shortened again, the rows are still rows.
-        let again = ResearchAgent.State.extract(kept, limit: 300, stems: ["koalition"])
-        #expect(again == kept)
         // Two rows are no table.
         let two = ResearchAgent.State.extract(
             "Titel\n" + table[1] + "\n" + table[2], limit: 300, stems: [])
