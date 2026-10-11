@@ -1750,8 +1750,9 @@ public struct ResearchAgent: Sendable {
     /// continued (Berlin: 715 words, cut inside the first bullet, the seat
     /// counts not yet written).
     static let compactAnswerNote = "Keep the answer compact enough to end within one reply "
-        + "(about 450 words at most): give the names and figures the question asks for first, "
-        + "and leave out background."
+        + "(about 450 words): give the names and figures the question asks for first, keep "
+        + "the source numbers and a short note on what remains unverified, and keep "
+        + "background short."
 
     static let repeatedSearchesStopRequest = "You keep repeating searches you already ran, "
         + "so the research stops here. Answer now from what you have read, citing source "
