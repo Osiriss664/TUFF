@@ -465,7 +465,7 @@ private final class HangingServices: ResearchHTTPTransport, @unchecked Sendable 
 
     @Test func settingsMatchTheCommandLineDefaultsAndRanges() {
         let defaults = ResearchRunSettings(model: "m", showThinking: false)
-        var expected = ResearchOptions()
+        var expected = ResearchOptions.standard
         expected.currentDate = defaults.options.currentDate
         #expect(defaults.options == expected)
         #expect(defaults.enableThinking == nil)

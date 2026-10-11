@@ -804,7 +804,8 @@ struct ResearchAgentTests {
     @Test func theEnvironmentChoosesTheMarkers() throws {
         let name = ResearchArguments.markersVariable
         #expect(name == "TUFF_RESEARCH_MARKERS")
-        #expect(try ResearchArguments.parse(["q"], environment: [:]).options.markers == .fixed)
+        #expect(try ResearchArguments.parse(["q"], environment: [:]).options.markers == .nonce)
+        #expect(ResearchOptions().markers == .fixed)
         #expect(try ResearchArguments.parse(["q"], environment: [name: "Nonce"]).options.markers == .nonce)
         #expect(try ResearchArguments.parse(["q"], environment: [name: "fixed"]).options.markers == .fixed)
         #expect(throws: ResearchArgumentError.self) {
@@ -4028,7 +4029,7 @@ struct ResearchArgumentsTests {
 
     @Test func researchSettingsAreParsed() throws {
         let defaults = try ResearchArguments.parse(["q"])
-        var expected = ResearchOptions()
+        var expected = ResearchOptions.standard
         expected.currentDate = defaults.options.currentDate
         #expect(defaults.options == expected)
         #expect(defaults.stepTimeoutMinutes == 30)

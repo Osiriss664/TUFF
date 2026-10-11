@@ -637,8 +637,9 @@ run can be compared with and without it.
   the server lists; an unknown model gets the flag. To measure on a Mac, set
   `TUFF_RESEARCH_PRESERVE_THINKING=on|off|auto` (default `auto`, the rule
   above) in the environment of `tuff research`; the app has no setting for it. The same goes for
-  `TUFF_RESEARCH_MARKERS=fixed|nonce` (default `fixed`): with `nonce` the markers around web
-  text carry a random code per run and `<<<` and `>>>` are made harmless in web text. The
+  `TUFF_RESEARCH_MARKERS=fixed|nonce` (default `nonce`): with `nonce` the markers around web
+  text carry a random code per run and `<<<` and `>>>` are made harmless in web text; `fixed`
+  gives the same markers in every run. The
   retry, the continuation and the revision ask with reasoning off, so with
   reasoning on they can still miss. A reply with tool calls is never used: the
   calls are not run. The turn stays in the conversation as the step loop

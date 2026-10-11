@@ -66,9 +66,11 @@ public struct ResearchOptions: Equatable, Sendable {
     /// A measuring aid: the command line reads it from the environment
     /// (`TUFF_RESEARCH_PRESERVE_THINKING`), the app leaves it on `auto`.
     public var preserveThinking: ResearchPreserveThinking = .auto
-    /// The markers around web text: `fixed`, the same in every run (the
-    /// default), or `nonce`, with a random code per run. A measuring aid: the
-    /// command line reads it from the environment (`TUFF_RESEARCH_MARKERS`).
+    /// The markers around web text: `fixed`, the same in every run, or
+    /// `nonce`, with a random code per run. `ResearchOptions()` keeps `fixed`
+    /// (the tests' baseline); the command line and the app start from
+    /// `standard`, which uses `nonce`. The command line can choose with the
+    /// environment (`TUFF_RESEARCH_MARKERS`).
     public var markers: ResearchMarkerMode = .fixed
     /// A file the first request for the answer is written to (the messages as
     /// JSON), to measure what the model got to read. A measuring aid: the
@@ -95,6 +97,15 @@ public struct ResearchOptions: Equatable, Sendable {
     public static let defaultThinkingMinutes = 3
 
     public init() {}
+
+    /// The options the command line and the app start from: the defaults
+    /// with the random-code markers (Spotlighting), which resisted every
+    /// injection test as well as fixed markers and warned less (11 Oct 2026).
+    public static var standard: ResearchOptions {
+        var options = ResearchOptions()
+        options.markers = .nonce
+        return options
+    }
 
     public static func today(_ date: Date = Date()) -> String {
         let formatter = DateFormatter()

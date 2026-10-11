@@ -78,7 +78,7 @@ public struct ResearchRunSettings: Equatable, Sendable {
 
     /// The loop options, each clamped to the range the command line accepts.
     var options: ResearchOptions {
-        var options = ResearchOptions()
+        var options = ResearchOptions.standard
         options.maxSteps = maxSteps.clamped(to: ResearchOptions.maxStepsRange)
         options.pageSliceCharacters = pageCharacters.clamped(
             to: ResearchOptions.pageCharactersRange)

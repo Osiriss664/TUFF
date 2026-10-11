@@ -20,7 +20,7 @@ public struct ResearchArguments: Equatable, Sendable {
     /// Minutes one model step may take before it is retried without reasoning.
     public var stepTimeoutMinutes = ResearchOptions.defaultStepTimeoutMinutes
     public var showHelp = false
-    public var options = ResearchOptions()
+    public var options = ResearchOptions.standard
 
     public static let usage = """
     usage: tuff research <question> [options]
