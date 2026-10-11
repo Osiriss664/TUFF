@@ -6378,6 +6378,7 @@ struct ResearchPaddedSourceListTests {
         for request in [ResearchAgent.budgetUsedUpRequest,
                         ResearchAgent.repeatedSearchesStopRequest] {
             #expect(request.contains("List each source only once"))
+            #expect(request.hasSuffix(ResearchAgent.compactAnswerNote))
         }
     }
 

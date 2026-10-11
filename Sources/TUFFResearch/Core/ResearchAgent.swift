@@ -1742,14 +1742,24 @@ public struct ResearchAgent: Sendable {
         + "you have read, citing source numbers, and say what remains unverified. Check every "
         + "item against each condition in the question, and leave out, or list as excluded "
         + "with the reason, any item that breaks one. List each source only once, and if you "
-        + "read fewer pages than the question asked for, say so instead of repeating entries."
+        + "read fewer pages than the question asked for, say so instead of repeating entries. "
+        + ResearchAgent.compactAnswerNote
+
+    /// The reply of the final answer is limited (2,048 tokens by default); an
+    /// answer that runs into the limit is cut off and often cannot be
+    /// continued (Berlin: 715 words, cut inside the first bullet, the seat
+    /// counts not yet written).
+    static let compactAnswerNote = "Keep the answer compact enough to end within one reply "
+        + "(about 450 words at most): give the names and figures the question asks for first, "
+        + "and leave out background."
 
     static let repeatedSearchesStopRequest = "You keep repeating searches you already ran, "
         + "so the research stops here. Answer now from what you have read, citing source "
         + "numbers, and say what remains unverified. Check every item against each condition "
         + "in the question, and leave out, or list as excluded with the reason, any item that "
         + "breaks one. List each source only once, and if you read fewer pages than the "
-        + "question asked for, say so instead of repeating entries."
+        + "question asked for, say so instead of repeating entries. "
+        + ResearchAgent.compactAnswerNote
 
     static let topUpNote = "Few pages had been read, so the research opened more of the top "
         + "search results for you. They follow below; use them like the pages you opened."
