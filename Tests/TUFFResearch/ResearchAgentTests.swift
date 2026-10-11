@@ -3443,6 +3443,27 @@ struct ResearchAgentTests {
         #expect(kept.hasPrefix("Wahl in Berlin"))
     }
 
+    @Test func extractKeepsTheRowsOfATableTogether() {
+        let table = ["| Partei | Prozent | Sitze |", "| Linke | 25,7 % | 47 |",
+                     "| CDU | 18,8 % | 34 |", "| AfD | 16,3 % | 29 |",
+                     "| Grüne | 14,3 % | 26 |", "| SPD | 12,1 % | 22 |"]
+        let sums = "Linke + Grüne + SPD — 95 Sitze (15 über der Mehrheit), CDU + AfD — 63 Sitze"
+        let filler = (1...6).map { _ in "Allgemeiner Text ohne Zahlen über die Wahl" }
+        let body = (["Wahl in Berlin"] + filler + [sums] + filler + table + filler)
+            .joined(separator: "\n")
+        let kept = ResearchAgent.State.extract(body, limit: 300, stems: ["koalition", "sitz"])
+        #expect(kept.contains("| SPD | 12,1 % | 22 |"))
+        #expect(kept.contains("| Linke | 25,7 % | 47 |\n| CDU | 18,8 % | 34 |"))
+        #expect(kept.count <= 300)
+        // Shortened again, the rows are still rows.
+        let again = ResearchAgent.State.extract(kept, limit: 300, stems: ["koalition"])
+        #expect(again == kept)
+        // Two rows are no table.
+        let two = ResearchAgent.State.extract(
+            "Titel\n" + table[1] + "\n" + table[2], limit: 300, stems: [])
+        #expect(!two.contains("\n"))
+    }
+
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {
         let body = "Title line\nnothing here\nZeitungen in Berlin\nmore filler\nBerlin only"
         let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["berlin", "zeitun"])
@@ -4303,6 +4324,19 @@ struct ResearchFigureCheckTests {
         let answer = "Der Typ PP 136 wiegt viel [2]."
         let page = "Typ | Gewicht\n" + filler + "PP 136 | 4500 | kg"
         #expect(check(answer, [2: page]).isEmpty)
+    }
+
+    @Test func aSeatCountInAnotherPartysRowIsFlagged() {
+        let page = "| Partei | Prozent | Sitze |\n| Linke | 25,7 % | 47 |\n"
+            + "| AfD | 16,3 % | 29 |\n| Grüne | 14,3 % | 26 |\n"
+        // 26 is on the page, but in the row of the Grüne.
+        let wrong = check("Bei der AfD (16,3 %, 26 Sitze) ist es knapp [1].", [1: page])
+        #expect(wrong.contains { $0.figure == "26" && $0.kind == .elsewhereOnPage })
+        let right = check("Bei der AfD (16,3 %, 29 Sitze) ist es knapp [1].", [1: page])
+        #expect(!right.contains { $0.figure == "29" })
+        let plain = check("Die Linke ist mit 25,7 % der Stimmen und 47 Sitzen stärkste Kraft [1].",
+                          [1: page])
+        #expect(!plain.contains { $0.figure == "47" })
     }
 
     @Test func aNumberFarFromEveryNameOnThePageIsFlagged() {

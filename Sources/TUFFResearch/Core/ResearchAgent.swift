@@ -3644,7 +3644,7 @@ public struct ResearchAgent: Sendable {
         /// the most keyword stems, in page order and joined by " … ". With
         /// no match, the start of the page.
         static func extract(_ body: String, limit: Int, stems: [String]) -> String {
-            let parts = passages(body)
+            let (parts, gaps) = passagesWithGaps(body)
             guard !parts.isEmpty else { return String(body.prefix(limit)) }
             let lead = String(parts[0].prefix(min(leadCharacters, limit / 4)))
             var chosen: [Int: String] = [0: lead]
@@ -3658,17 +3658,58 @@ public struct ResearchAgent: Sendable {
                 return stems.filter { lower.contains($0) }.count
                     + (Self.figureCount(part) >= 2 ? 1 : 0)
             }
-            let ranked = parts.indices.dropFirst().filter { scores[$0] > 0 }
-                .sorted { scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1 }
-            for index in ranked {
-                let room = limit - used - 3
-                if parts[index].count <= room {
+            // The rows of one table are kept together, or the model fills the
+            // missing rows with guesses (Berlin on 30fd84e: the AfD, Grüne and
+            // SPD seat counts). A table is three or more rows in a row; it
+            // ranks as one passage, above single lines of figures.
+            var tables: [[Int]] = []
+            var run: [Int] = []
+            for index in Array(parts.indices.dropFirst()) + [parts.count] {
+                let isRow = index < parts.count && isTableRow(parts[index])
+                if isRow, let last = run.last, index == last + 1, !gaps.contains(index) {
+                    run.append(index)
+                    continue
+                }
+                if run.count >= 3, run.contains(where: { figureCount(parts[$0]) >= 1 }) {
+                    tables.append(run)
+                }
+                run = isRow ? [index] : []
+            }
+            var tableOf: [Int: Int] = [:]
+            for (number, rows) in tables.enumerated() { for row in rows { tableOf[row] = number } }
+            var units: [(rows: [Int], score: Int)] = parts.indices.dropFirst()
+                .filter { tableOf[$0] == nil && scores[$0] > 0 }
+                .map { (rows: [$0], score: scores[$0]) }
+            for rows in tables {
+                units.append((rows: rows, score: (rows.map { scores[$0] }.max() ?? 0) + 2))
+            }
+            units.sort { $0.score != $1.score ? $0.score > $1.score : $0.rows[0] < $1.rows[0] }
+            for unit in units {
+                if unit.rows.count == 1 {
+                    let index = unit.rows[0]
+                    let room = limit - used - 3
+                    if parts[index].count <= room {
+                        chosen[index] = parts[index]
+                        used += parts[index].count + 3
+                    } else if chosen.count == 1, room >= 60 {
+                        // The best match is longer than the room left: keep its start.
+                        chosen[index] = String(parts[index].prefix(room - 1)) + "…"
+                        used = limit
+                    }
+                    continue
+                }
+                // A table takes at most two thirds of the limit and twelve rows,
+                // from its first row on.
+                var taken = 0
+                var tableCharacters = 0
+                for index in unit.rows {
+                    guard taken < 12, chosen[index] == nil,
+                          tableCharacters + parts[index].count <= limit * 2 / 3,
+                          parts[index].count <= limit - used - 3 else { break }
                     chosen[index] = parts[index]
                     used += parts[index].count + 3
-                } else if chosen.count == 1, room >= 60 {
-                    // The best match is longer than the room left: keep its start.
-                    chosen[index] = String(parts[index].prefix(room - 1)) + "…"
-                    used = limit
+                    tableCharacters += parts[index].count + 3
+                    taken += 1
                 }
             }
             if chosen.count == 1 {
@@ -3678,8 +3719,25 @@ public struct ResearchAgent: Sendable {
                     used += parts[index].count + 3
                 }
             }
-            let text = chosen.keys.sorted().compactMap { chosen[$0] }.joined(separator: " … ")
+            // Rows of one table stay on their own lines, so a later shortening
+            // still sees them as rows.
+            var text = ""
+            var previous: Int?
+            for index in chosen.keys.sorted() {
+                if let before = previous {
+                    text += index == before + 1 && tableOf[index] != nil
+                        && tableOf[index] == tableOf[before] ? "\n" : " … "
+                }
+                text += chosen[index] ?? ""
+                previous = index
+            }
             return String(text.prefix(limit))
+        }
+
+        /// A line of a table as the page text writes it: cells between pipes.
+        static func isTableRow(_ line: String) -> Bool {
+            line.hasPrefix("|") && line.filter { $0 == "|" }.count >= 3
+                && line.contains { $0.isLetter || $0.isNumber }
         }
 
         /// How many numbers of two or more digits a passage holds; a number may
@@ -3705,25 +3763,42 @@ public struct ResearchAgent: Sendable {
         /// A page's text split into lines, and long lines into pieces of at
         /// most `passageCharacters`, cut after a sentence where one ends.
         static func passages(_ text: String) -> [String] {
+            passagesWithGaps(text).parts
+        }
+
+        /// The passages, and the indices of those that do not directly follow
+        /// the one before on the page (a marker line was dropped between them).
+        static func passagesWithGaps(_ text: String) -> (parts: [String], gaps: Set<Int>) {
             var result: [String] = []
-            for line in text.split(whereSeparator: \.isNewline) where !isPassageMarker(line) {
+            var gaps: Set<Int> = []
+            var afterMarker = false
+            for line in text.split(whereSeparator: \.isNewline) {
+                if isPassageMarker(line) {
+                    afterMarker = true
+                    continue
+                }
                 var rest = line.trimmingCharacters(in: .whitespaces)
                 while !rest.isEmpty {
-                    guard rest.count > passageCharacters else {
-                        result.append(rest)
-                        break
+                    var piece = rest
+                    if rest.count > passageCharacters {
+                        let window = rest.prefix(passageCharacters)
+                        var cut = window.endIndex
+                        if let end = window.lastIndex(where: { ".!?".contains($0) }),
+                           window.distance(from: window.startIndex, to: end) >= 80 {
+                            cut = window.index(after: end)
+                        }
+                        piece = rest[..<cut].trimmingCharacters(in: .whitespaces)
+                        rest = rest[cut...].trimmingCharacters(in: .whitespaces)
+                    } else {
+                        rest = ""
                     }
-                    let window = rest.prefix(passageCharacters)
-                    var cut = window.endIndex
-                    if let end = window.lastIndex(where: { ".!?".contains($0) }),
-                       window.distance(from: window.startIndex, to: end) >= 80 {
-                        cut = window.index(after: end)
-                    }
-                    result.append(rest[..<cut].trimmingCharacters(in: .whitespaces))
-                    rest = rest[cut...].trimmingCharacters(in: .whitespaces)
+                    guard !piece.isEmpty else { continue }
+                    if afterMarker { gaps.insert(result.count) }
+                    afterMarker = false
+                    result.append(piece)
                 }
             }
-            return result.filter { !$0.isEmpty }
+            return (result, gaps)
         }
 
         /// Common words that say nothing about a page's topic.

@@ -332,6 +332,10 @@ enum ResearchFigureCheck {
                       let elsewhere = elsewhereOnPage(candidate, figure: figure, names: names,
                                                       pages: pages) {
                 result.append(elsewhere)
+            } else if proximity, case .number(let token) = candidate,
+                      !token.ignored, isSeatCount(token, in: plain),
+                      let owned = ownerFinding(token, figure: figure, in: plain, pages: pages) {
+                result.append(owned)
             }
         }
         return result
@@ -709,6 +713,114 @@ enum ResearchFigureCheck {
     /// is expected.
     static let contextWindow = 300
 
+    /// A number followed by a count of seats (`26 Sitze`, `47 Mandate`, `26 seats`).
+    private static func isSeatCount(_ token: Token, in text: String) -> Bool {
+        let ns = text as NSString
+        var index = token.location + token.text.utf16.count
+        while index < ns.length, ns.character(at: index) == 0x20 || ns.character(at: index) == 0xA0 {
+            index += 1
+        }
+        var end = index
+        while end < ns.length,
+              let scalar = UnicodeScalar(ns.character(at: end)), Character(scalar).isLetter {
+            end += 1
+        }
+        guard end > index else { return false }
+        let word = ns.substring(with: NSRange(location: index, length: end - index)).lowercased()
+        return !word.hasPrefix("sitzung")
+            && ["sitz", "mandat", "seat"].contains { word.hasPrefix($0) }
+    }
+
+    /// The names of the clause a number stands in: what is written since the
+    /// last comma (not one inside a number), semicolon, sentence end or line
+    /// break, and, for a number inside a bracket, the clause before the
+    /// bracket as well (`der AfD (16,3 %, 26 Sitze)` names `AfD`).
+    private static func clauseNames(before token: Token, in text: String) -> [NameWord] {
+        let ns = text as NSString
+        let end = min(token.location, ns.length)
+        func unit(_ index: Int) -> unichar? { index >= 0 && index < ns.length ? ns.character(at: index) : nil }
+        func isDigit(_ value: unichar?) -> Bool { value.map { $0 >= 0x30 && $0 <= 0x39 } ?? false }
+        func isBoundary(_ index: Int, commas: Bool) -> Bool {
+            guard let value = unit(index) else { return false }
+            switch value {
+            case 0x0A, 0x3B: return true
+            case 0x2E, 0x21, 0x3F: return unit(index + 1).map { $0 == 0x20 || $0 == 0x0A } ?? true
+            case 0x2C: return commas && !(isDigit(unit(index - 1)) && isDigit(unit(index + 1)))
+            default: return false
+            }
+        }
+        var begin = end
+        var depth = 0
+        var index = end - 1
+        while index >= 0 {
+            let value = ns.character(at: index)
+            if value == 0x29 {
+                depth += 1
+            } else if value == 0x28 {
+                if depth == 0 {
+                    begin = index
+                    break
+                }
+                depth -= 1
+            } else if isBoundary(index, commas: false) {
+                break
+            }
+            index -= 1
+        }
+        var from = begin
+        while from > 0, !isBoundary(from - 1, commas: true) { from -= 1 }
+        guard end > from else { return [] }
+        let clause = ns.substring(with: NSRange(location: from, length: end - from))
+        var result: [NameWord] = []
+        var word = ""
+        func flush() {
+            defer { word = "" }
+            guard let first = word.first, first.isUppercase, word.count >= 3,
+                  !isIgnored(word) else { return }
+            let stem = wordStem(word)
+            if stem.count >= 2, !result.contains(where: { $0.stem == stem }) {
+                result.append(NameWord(text: word, stem: stem))
+            }
+        }
+        for character in clause {
+            if character.isLetter { word.append(character) } else { flush() }
+        }
+        flush()
+        return result
+    }
+
+    /// The finding for a count of seats that is on a cited page, but never on
+    /// the same line as a name of its clause (`AfD (16,3 %, 26 Sitze)` with
+    /// 26 only in the row of another party). Only names that are on the page
+    /// count, and a page with none of them says nothing; as in
+    /// `elsewhereOnPage`, every cited page that has the number must fail.
+    private static func ownerFinding(_ token: Token, figure: String, in text: String,
+                                     pages: [(number: Int, page: PageFacts)])
+        -> ResearchUnverifiedFigure? {
+        let names = clauseNames(before: token, in: text)
+        guard !names.isEmpty else { return nil }
+        let candidate = Candidate.number(token)
+        var failing: [Int] = []
+        var missing: [String] = []
+        for (number, page) in pages {
+            let places = candidate.locations(in: page)
+            if places.isEmpty { continue }
+            let occurring = names.filter { page.words.hasShortExtension(of: $0.stem) }
+            if occurring.isEmpty { return nil }
+            for place in places {
+                for name in occurring
+                where page.hasOnLine(name.stem, near: place, length: token.text.utf16.count) {
+                    return nil
+                }
+            }
+            failing.append(number)
+            for name in occurring where !missing.contains(name.text) { missing.append(name.text) }
+        }
+        guard !failing.isEmpty else { return nil }
+        return ResearchUnverifiedFigure(figure: figure, sources: failing,
+                                        kind: .elsewhereOnPage, names: Array(missing.prefix(3)))
+    }
+
     /// The finding for a figure that is on the cited pages that have it, but
     /// never near a name of the sentence that is also on that page.
     private static func elsewhereOnPage(_ candidate: Candidate, figure: String,
@@ -996,6 +1108,18 @@ enum ResearchFigureCheck {
                     max(near.start - anchor.end, anchor.start - near.end) <= gap
                 }
             }
+        }
+
+        /// Whether the lowercase `stem` is on the same line as the figure that
+        /// starts at `place`, within `gap` characters of it.
+        func hasOnLine(_ stem: String, near place: Int, length: Int, within gap: Int = 60) -> Bool {
+            guard place < folded.count else { return false }
+            var low = place
+            while low > max(0, place - gap), folded[low - 1] != 0x0A { low -= 1 }
+            let limit = min(folded.count, place + length + gap)
+            var high = min(folded.count, place + length)
+            while high < limit, folded[high] != 0x0A { high += 1 }
+            return ResearchFigureCheck.occurs(Array(stem.utf16), in: folded, from: low, to: high)
         }
 
         /// Whether the lowercase `stem` is within `contextWindow` characters
