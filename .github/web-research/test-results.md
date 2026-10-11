@@ -490,6 +490,16 @@ most 2 pages, and some cited sources they never opened.
 
 - **d92c0c8** (stricter rule for opening pages): see the measurements in the
   research notes; confirmed on the Mac.
-- **7f85f1c** (shortening protects page text, per-site stop): Berlin result
-  **PLACEHOLDER, to be filled once the Mac run is green** (page text in the
-  final request, refused reads per site, seat figures in the answer).
+- **7f85f1c** (shortening protects page text, per-site stop): the final
+  request again carried page text (about 5.9k characters instead of none),
+  and refused reads on one site dropped from 36 to 2.
+- **164d3b8** (table rows with figures survive shortening, seat-count check,
+  random-code markers as default, compact-answer hint when the research is
+  stopped): Berlin coalition question, Qwen3.6, default settings. Finished in
+  18 minutes, 19 steps, 19 sources, 10 shortenings. The answer was complete
+  (562 words, ended by itself). All five seat counts (47, 34, 29, 26, 22) and
+  all percentages matched the pages; the last request was served from cache.
+  Unit tests 270/270 and app tests 55/55. Caveats: one run only, the pages
+  read vary from run to run, and a page that spells out party names was only
+  covered by a unit test, not by a real run. The sources and the number check
+  remain the thing to look at.
