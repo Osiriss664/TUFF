@@ -3507,7 +3507,16 @@ struct ResearchAgentTests {
         #expect(kept.contains("| Christlich Demokratische Union | 18,8 % | 28,2 % | -9,4 | 28 |"))
         #expect(kept.contains("Alternative für Deutschland"))
         #expect(!kept.contains("Ergebnis je Partei"))
+        #expect(kept.contains("| Partei | Stimmen 2026 | 2023 | Differenz | Sitze |"))
         #expect(kept.count <= 300)
+        // With room, every row stays, also the one under the threshold; the
+        // separator and the caption do not.
+        let wide = ResearchAgent.State.extract(body, limit: 900, stems: ["koalition"])
+        #expect(wide.contains("| Bündnis Sahra Wagenknecht | 4,7 % | – | neu | – |"))
+        #expect(wide.contains("Sozialdemokratische Partei Deutschlands"))
+        #expect(!wide.contains("| --- |"))
+        #expect(ResearchAgent.State.numericCells("| Die Linke | 25,7 % | 12,2 % | +13,5 | 38 |") == 4)
+        #expect(ResearchAgent.State.numericCells("| Einwohner | 3.850.000 |") == 1)
     }
 
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {

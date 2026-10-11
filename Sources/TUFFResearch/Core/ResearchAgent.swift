@@ -3687,22 +3687,25 @@ public struct ResearchAgent: Sendable {
             var tableOf: [Int: Int] = [:]
             for (number, rows) in tables.enumerated() { for row in rows { tableOf[row] = number } }
             // A page with a table of figures gives the table more of the room.
+            let figureTables = Set(tables.indices.filter { number in
+                tables[number].filter { numericCells(parts[$0]) >= 2 }.count * 2
+                    >= tables[number].count })
             let lead = String(parts[0].prefix(min(leadCharacters,
-                                                  limit / (tables.isEmpty ? 4 : 6))))
+                                                  limit / (figureTables.isEmpty ? 4 : 6))))
             var chosen: [Int: String] = [0: lead]
             var used = lead.count
-            var units: [(rows: [Int], score: Int)] = parts.indices.dropFirst()
+            var units: [(rows: [Int], score: Int, figure: Bool)] = parts.indices.dropFirst()
                 .filter { tableOf[$0] == nil && scores[$0] > 0 }
-                .map { (rows: [$0], score: scores[$0]) }
-            for rows in tables {
+                .map { (rows: [$0], score: scores[$0], figure: false) }
+            for (number, rows) in tables.enumerated() {
                 // A table of figures outranks prose: its rows rarely match the
                 // question's words (party names, not "coalition"), and the prose
                 // around it would otherwise fill the room (Berlin on 9eaafa7).
                 // Only a table whose rows mostly hold several figures (shares,
                 // seats) does; an infobox of single figures keeps its old rank.
-                let figureRows = rows.filter { figureCount(parts[$0]) >= 2 }.count
-                units.append((rows: rows, score: figureRows * 2 >= rows.count
-                    ? (scores.max() ?? 0) + 1 : (rows.map { scores[$0] }.max() ?? 0) + 2))
+                units.append((rows: rows, score: figureTables.contains(number)
+                    ? (scores.max() ?? 0) + 1 : (rows.map { scores[$0] }.max() ?? 0) + 2,
+                              figure: figureTables.contains(number)))
             }
             units.sort { $0.score != $1.score ? $0.score > $1.score : $0.rows[0] < $1.rows[0] }
             for unit in units {
@@ -3719,35 +3722,38 @@ public struct ResearchAgent: Sendable {
                     }
                     continue
                 }
-                // A table takes at most nine tenths of the limit and twelve rows,
-                // from its first row of figures on, with empty cells and repeated
-                // spaces shortened. Its caption, separator and header lines have
-                // no figures and would use up the room (Berlin on d98ab08: a
-                // caption, a header and a separator, and no party row); the
-                // header follows if room is left.
+                // A table takes at most nine tenths of the limit and twelve rows.
+                // A table of figures starts at its first row of figures: the
+                // caption, header and separator lines would use up the room
+                // (Berlin on d98ab08: a caption, a header and a separator, and
+                // no party row). Its header, without bracketed notes, is kept
+                // first if it is short, so the columns can be told apart. Rows
+                // with one figure (a party under the threshold) follow; only
+                // separators are left out.
                 var taken = 0
                 var tableCharacters = 0
-                var firstRow: Int?
-                for index in unit.rows where figureCount(parts[index]) >= 2 {
+                var start = unit.rows[0]
+                if unit.figure {
+                    start = unit.rows.first { numericCells(parts[$0]) >= 2 } ?? start
+                    if let headerIndex = unit.rows.last(where: {
+                        $0 < start && parts[$0].contains { $0.isLetter } }) {
+                        let header = compactHeader(parts[headerIndex])
+                        if header.count <= limit / 4, header.count <= limit - used - 3 {
+                            chosen[headerIndex] = header
+                            used += header.count + 3
+                        }
+                    }
+                }
+                for index in unit.rows where index >= start
+                    && parts[index].contains(where: { $0.isLetter || $0.isNumber }) {
                     let row = compactRow(parts[index])
                     guard taken < 12, chosen[index] == nil,
                           tableCharacters + row.count <= limit * 9 / 10,
                           row.count <= limit - used - 3 else { break }
                     chosen[index] = row
-                    firstRow = firstRow ?? index
                     used += row.count + 3
                     tableCharacters += row.count + 3
                     taken += 1
-                }
-                if let firstRow,
-                   let headerIndex = unit.rows.last(where: {
-                       $0 < firstRow && parts[$0].contains { $0.isLetter } }),
-                   chosen[headerIndex] == nil {
-                    let header = compactRow(parts[headerIndex])
-                    if header.count <= limit - used - 3 {
-                        chosen[headerIndex] = header
-                        used += header.count + 3
-                    }
                 }
             }
             if chosen.count == 1 {
@@ -3769,6 +3775,21 @@ public struct ResearchAgent: Sendable {
                 previous = index
             }
             return String(text.prefix(limit))
+        }
+
+        /// How many cells of a table row are numbers (`47`, `25,7 %`, `+13,5`).
+        static func numericCells(_ row: String) -> Int {
+            row.split(separator: "|").filter { cell in
+                let text = cell.trimmingCharacters(in: .whitespaces)
+                return text.contains { $0.isNumber }
+                    && text.allSatisfy { $0.isNumber || " ,.%+-\u{2212}\u{2013}".contains($0) }
+            }.count
+        }
+
+        /// A header row without bracketed notes (`Sitze (rechnerisch)`).
+        static func compactHeader(_ row: String) -> String {
+            compactRow(row.replacingOccurrences(
+                of: #"\s*\([^)|]*\)"#, with: "", options: .regularExpression))
         }
 
         /// A table row with empty cells (`|  |`) and repeated spaces made short;
