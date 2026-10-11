@@ -727,8 +727,8 @@ enum ResearchFigureCheck {
         }
         guard end > index else { return false }
         let word = ns.substring(with: NSRange(location: index, length: end - index)).lowercased()
-        return !word.hasPrefix("sitzung")
-            && ["sitz", "mandat", "seat"].contains { word.hasPrefix($0) }
+        return ["sitz", "sitze", "sitzen", "mandat", "mandate", "mandaten", "seat", "seats"]
+            .contains(word)
     }
 
     /// The names of the clause a number stands in: what is written since the
@@ -790,8 +790,9 @@ enum ResearchFigureCheck {
     }
 
     /// The finding for a count of seats that is on a cited page, but never on
-    /// the same line as a name of its clause (`AfD (16,3 %, 26 Sitze)` with
-    /// 26 only in the row of another party). Only names that are on the page
+    /// the same table row as a name of its clause (`AfD (16,3 %, 26 Sitze)`
+    /// with 26 only in the row of another party). A number in prose, or in a
+    /// row that has the name, passes. Only names that are on the page
     /// count, and a page with none of them says nothing; as in
     /// `elsewhereOnPage`, every cited page that has the number must fail.
     private static func ownerFinding(_ token: Token, figure: String, in text: String,
@@ -809,7 +810,7 @@ enum ResearchFigureCheck {
             if occurring.isEmpty { return nil }
             for place in places {
                 for name in occurring
-                where page.hasOnLine(name.stem, near: place, length: token.text.utf16.count) {
+                where page.hasOnTableLine(name.stem, near: place, length: token.text.utf16.count) {
                     return nil
                 }
             }
@@ -1110,15 +1111,17 @@ enum ResearchFigureCheck {
             }
         }
 
-        /// Whether the lowercase `stem` is on the same line as the figure that
-        /// starts at `place`, within `gap` characters of it.
-        func hasOnLine(_ stem: String, near place: Int, length: Int, within gap: Int = 60) -> Bool {
-            guard place < folded.count else { return false }
+        /// Whether the lowercase `stem` is on the line of the figure that starts
+        /// at `place`, if that line is a table row (it starts with a pipe). In
+        /// prose a name can stand far from its number, so anything else says
+        /// nothing and counts as found.
+        func hasOnTableLine(_ stem: String, near place: Int, length: Int) -> Bool {
+            guard place < folded.count else { return true }
             var low = place
-            while low > max(0, place - gap), folded[low - 1] != 0x0A { low -= 1 }
-            let limit = min(folded.count, place + length + gap)
+            while low > 0, folded[low - 1] != 0x0A { low -= 1 }
+            guard folded[low] == 0x7C else { return true }
             var high = min(folded.count, place + length)
-            while high < limit, folded[high] != 0x0A { high += 1 }
+            while high < folded.count, folded[high] != 0x0A { high += 1 }
             return ResearchFigureCheck.occurs(Array(stem.utf16), in: folded, from: low, to: high)
         }
 

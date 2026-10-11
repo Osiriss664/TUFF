@@ -3670,7 +3670,8 @@ public struct ResearchAgent: Sendable {
                     run.append(index)
                     continue
                 }
-                if run.count >= 3, run.contains(where: { figureCount(parts[$0]) >= 1 }) {
+                if run.count >= 3,
+                   run.filter({ figureCount(parts[$0]) >= 1 }).count * 2 >= run.count {
                     tables.append(run)
                 }
                 run = isRow ? [index] : []
@@ -3719,14 +3720,13 @@ public struct ResearchAgent: Sendable {
                     used += parts[index].count + 3
                 }
             }
-            // Rows of one table stay on their own lines, so a later shortening
-            // still sees them as rows.
+            // A table starts and ends on its own lines, so a later shortening
+            // still sees its rows as rows.
             var text = ""
             var previous: Int?
             for index in chosen.keys.sorted() {
                 if let before = previous {
-                    text += index == before + 1 && tableOf[index] != nil
-                        && tableOf[index] == tableOf[before] ? "\n" : " … "
+                    text += tableOf[index] != nil || tableOf[before] != nil ? "\n" : " … "
                 }
                 text += chosen[index] ?? ""
                 previous = index
@@ -3737,7 +3737,6 @@ public struct ResearchAgent: Sendable {
         /// A line of a table as the page text writes it: cells between pipes.
         static func isTableRow(_ line: String) -> Bool {
             line.hasPrefix("|") && line.filter { $0 == "|" }.count >= 3
-                && line.contains { $0.isLetter || $0.isNumber }
         }
 
         /// How many numbers of two or more digits a passage holds; a number may
