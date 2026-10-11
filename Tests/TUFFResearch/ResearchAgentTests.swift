@@ -3480,11 +3480,11 @@ struct ResearchAgentTests {
         for party in ["Linke", "CDU", "AfD", "Grüne", "SPD"] {
             #expect(kept.contains("| \(party) |"), "missing \(party) in \(kept)")
         }
-        #expect(kept.contains("| AfD | 16,3 % +7,2 | 29 +12 |"))
+        #expect(kept.contains("| AfD | | 16,3 % +7,2 | 29 +12 |"))
         #expect(kept.count <= 300)
         let row = "| Die Linke | 25,7 % | +13,4 | 47 | 28 |"
         #expect(ResearchAgent.State.isTableRow(row))
-        #expect(ResearchAgent.State.compactRow("| Linke |  | 47 |") == "| Linke | 47 |")
+        #expect(ResearchAgent.State.compactRow("| Linke |  | 47 |") == "| Linke | | 47 |")
     }
 
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {

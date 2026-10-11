@@ -3685,7 +3685,11 @@ public struct ResearchAgent: Sendable {
                 // A table of figures outranks prose: its rows rarely match the
                 // question's words (party names, not "coalition"), and the prose
                 // around it would otherwise fill the room (Berlin on 9eaafa7).
-                units.append((rows: rows, score: (scores.max() ?? 0) + 1))
+                // Only a table whose rows mostly hold several figures (shares,
+                // seats) does; an infobox of single figures keeps its old rank.
+                let figureRows = rows.filter { figureCount(parts[$0]) >= 2 }.count
+                units.append((rows: rows, score: figureRows * 2 >= rows.count
+                    ? (scores.max() ?? 0) + 1 : (rows.map { scores[$0] }.max() ?? 0) + 2))
             }
             units.sort { $0.score != $1.score ? $0.score > $1.score : $0.rows[0] < $1.rows[0] }
             for unit in units {
@@ -3703,7 +3707,7 @@ public struct ResearchAgent: Sendable {
                     continue
                 }
                 // A table takes at most four fifths of the limit and twelve rows,
-                // from its first row on, without empty cells and repeated spaces.
+                // from its first row on, with empty cells and repeated spaces shortened.
                 var taken = 0
                 var tableCharacters = 0
                 for index in unit.rows {
@@ -3738,10 +3742,11 @@ public struct ResearchAgent: Sendable {
             return String(text.prefix(limit))
         }
 
-        /// A table row without empty cells (`| Linke |  | 47 |`) and repeated spaces.
+        /// A table row with empty cells (`|  |`) and repeated spaces made short;
+        /// the cells and pipes stay, so the columns still line up.
         static func compactRow(_ row: String) -> String {
             var result = row
-            while result.contains(" |  |") { result = result.replacingOccurrences(of: " |  |", with: " |") }
+            while result.contains("|  |") { result = result.replacingOccurrences(of: "|  |", with: "| |") }
             while result.contains("  ") { result = result.replacingOccurrences(of: "  ", with: " ") }
             return result
         }
