@@ -1,3 +1,5 @@
+> **This fork is retired.** The web research work has moved to a standalone companion app, SandSeek, which works with any local model server. Nothing new will be added here. Credit for TUFF itself stays with its author, [rexmhall09](https://github.com/rexmhall09), and the [original repository](https://github.com/rexmhall09/TUFF) is the place for downloads and support.
+
 # TUFF + Web Research (fork)
 
 This is a personal fork of **[TUFF](https://github.com/rexmhall09/TUFF)** by
