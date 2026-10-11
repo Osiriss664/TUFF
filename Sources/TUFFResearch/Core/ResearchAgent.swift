@@ -3657,9 +3657,6 @@ public struct ResearchAgent: Sendable {
         static func extract(_ body: String, limit: Int, stems: [String]) -> String {
             let (parts, gaps) = passagesWithGaps(body)
             guard !parts.isEmpty else { return String(body.prefix(limit)) }
-            let lead = String(parts[0].prefix(min(leadCharacters, limit / 4)))
-            var chosen: [Int: String] = [0: lead]
-            var used = lead.count
             // A passage that carries figures (a seat table, a result list) ranks
             // above plain text that matches no keyword: the numbers are what an
             // answer is checked against, and the start of a page rarely has them
@@ -3689,6 +3686,11 @@ public struct ResearchAgent: Sendable {
             }
             var tableOf: [Int: Int] = [:]
             for (number, rows) in tables.enumerated() { for row in rows { tableOf[row] = number } }
+            // A page with a table of figures gives the table more of the room.
+            let lead = String(parts[0].prefix(min(leadCharacters,
+                                                  limit / (tables.isEmpty ? 4 : 6))))
+            var chosen: [Int: String] = [0: lead]
+            var used = lead.count
             var units: [(rows: [Int], score: Int)] = parts.indices.dropFirst()
                 .filter { tableOf[$0] == nil && scores[$0] > 0 }
                 .map { (rows: [$0], score: scores[$0]) }
@@ -3717,19 +3719,35 @@ public struct ResearchAgent: Sendable {
                     }
                     continue
                 }
-                // A table takes at most four fifths of the limit and twelve rows,
-                // from its first row on, with empty cells and repeated spaces shortened.
+                // A table takes at most nine tenths of the limit and twelve rows,
+                // from its first row of figures on, with empty cells and repeated
+                // spaces shortened. Its caption, separator and header lines have
+                // no figures and would use up the room (Berlin on d98ab08: a
+                // caption, a header and a separator, and no party row); the
+                // header follows if room is left.
                 var taken = 0
                 var tableCharacters = 0
-                for index in unit.rows {
+                var firstRow: Int?
+                for index in unit.rows where figureCount(parts[index]) >= 2 {
                     let row = compactRow(parts[index])
                     guard taken < 12, chosen[index] == nil,
-                          tableCharacters + row.count <= limit * 4 / 5,
+                          tableCharacters + row.count <= limit * 9 / 10,
                           row.count <= limit - used - 3 else { break }
                     chosen[index] = row
+                    firstRow = firstRow ?? index
                     used += row.count + 3
                     tableCharacters += row.count + 3
                     taken += 1
+                }
+                if let firstRow,
+                   let headerIndex = unit.rows.last(where: {
+                       $0 < firstRow && parts[$0].contains { $0.isLetter } }),
+                   chosen[headerIndex] == nil {
+                    let header = compactRow(parts[headerIndex])
+                    if header.count <= limit - used - 3 {
+                        chosen[headerIndex] = header
+                        used += header.count + 3
+                    }
                 }
             }
             if chosen.count == 1 {

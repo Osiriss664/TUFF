@@ -3487,6 +3487,29 @@ struct ResearchAgentTests {
         #expect(ResearchAgent.State.compactRow("| Linke |  | 47 |") == "| Linke | | 47 |")
     }
 
+    @Test func extractTakesTheFigureRowsOfATableBeforeItsCaptionAndHeader() {
+        // wahlergebnisse.io on 11 Oct: a caption row, a header, a separator,
+        // then full party names. No keyword matches any of them.
+        let rows = ["| Wahl zum Abgeordnetenhaus Berlin 2026: Ergebnis je Partei und Veränderung |  |  |  |  |",
+                    "| Partei | Stimmen 2026 (%) | 2023 (%) | Differenz | Sitze (rechnerisch) |",
+                    "| --- | --- | --- | --- | --- |",
+                    "| Die Linke | 25,7 % | 12,2 % | +13,5 | 38 |",
+                    "| Christlich Demokratische Union | 18,8 % | 28,2 % | -9,4 | 28 |",
+                    "| Alternative für Deutschland | 16,3 % | 9,1 % | +7,2 | 24 |",
+                    "| Bündnis 90/Die Grünen | 14,3 % | 18,4 % | -4,1 | 22 |",
+                    "| Sozialdemokratische Partei Deutschlands | 12,1 % | 18,4 % | -6,3 | 18 |",
+                    "| Bündnis Sahra Wagenknecht | 4,7 % | – | neu | – |"]
+        let intro = "Die Koalitionsverhandlungen in Berlin nach der Wahl am 20. September 2026 laufen."
+        let body = (["Wahlergebnis Berlin", intro] + rows + [intro]).joined(separator: "\n")
+        let kept = ResearchAgent.State.extract(body, limit: 300,
+                                               stems: ["koalition", "verhandlung", "berlin"])
+        #expect(kept.contains("| Die Linke | 25,7 % | 12,2 % | +13,5 | 38 |"))
+        #expect(kept.contains("| Christlich Demokratische Union | 18,8 % | 28,2 % | -9,4 | 28 |"))
+        #expect(kept.contains("Alternative für Deutschland"))
+        #expect(!kept.contains("Ergebnis je Partei"))
+        #expect(kept.count <= 300)
+    }
+
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {
         let body = "Title line\nnothing here\nZeitungen in Berlin\nmore filler\nBerlin only"
         let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["berlin", "zeitun"])
