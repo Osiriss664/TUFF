@@ -3682,7 +3682,10 @@ public struct ResearchAgent: Sendable {
                 .filter { tableOf[$0] == nil && scores[$0] > 0 }
                 .map { (rows: [$0], score: scores[$0]) }
             for rows in tables {
-                units.append((rows: rows, score: (rows.map { scores[$0] }.max() ?? 0) + 2))
+                // A table of figures outranks prose: its rows rarely match the
+                // question's words (party names, not "coalition"), and the prose
+                // around it would otherwise fill the room (Berlin on 9eaafa7).
+                units.append((rows: rows, score: (scores.max() ?? 0) + 1))
             }
             units.sort { $0.score != $1.score ? $0.score > $1.score : $0.rows[0] < $1.rows[0] }
             for unit in units {
@@ -3699,17 +3702,18 @@ public struct ResearchAgent: Sendable {
                     }
                     continue
                 }
-                // A table takes at most two thirds of the limit and twelve rows,
-                // from its first row on.
+                // A table takes at most four fifths of the limit and twelve rows,
+                // from its first row on, without empty cells and repeated spaces.
                 var taken = 0
                 var tableCharacters = 0
                 for index in unit.rows {
+                    let row = compactRow(parts[index])
                     guard taken < 12, chosen[index] == nil,
-                          tableCharacters + parts[index].count <= limit * 2 / 3,
-                          parts[index].count <= limit - used - 3 else { break }
-                    chosen[index] = parts[index]
-                    used += parts[index].count + 3
-                    tableCharacters += parts[index].count + 3
+                          tableCharacters + row.count <= limit * 4 / 5,
+                          row.count <= limit - used - 3 else { break }
+                    chosen[index] = row
+                    used += row.count + 3
+                    tableCharacters += row.count + 3
                     taken += 1
                 }
             }
@@ -3732,6 +3736,14 @@ public struct ResearchAgent: Sendable {
                 previous = index
             }
             return String(text.prefix(limit))
+        }
+
+        /// A table row without empty cells (`| Linke |  | 47 |`) and repeated spaces.
+        static func compactRow(_ row: String) -> String {
+            var result = row
+            while result.contains(" |  |") { result = result.replacingOccurrences(of: " |  |", with: " |") }
+            while result.contains("  ") { result = result.replacingOccurrences(of: "  ", with: " ") }
+            return result
         }
 
         /// A line of a table as the page text writes it: cells between pipes.

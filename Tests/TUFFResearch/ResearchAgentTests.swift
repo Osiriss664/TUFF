@@ -3461,6 +3461,32 @@ struct ResearchAgentTests {
         #expect(!two.contains("\n"))
     }
 
+    @Test func extractKeepsRealSeatTableRowsAgainstKeywordProse() {
+        // Rows as two Berlin pages wrote them: empty cells, signed changes, a
+        // Unicode minus. The prose around them matches the question's words.
+        let intro = "Die Koalitionsverhandlungen in Berlin: Nach der Wahl verteilen sich die 158 "
+            + "Sitze wie folgt, mögliche Koalitionen sind unten aufgeführt."
+        let coalitions = "Mögliche Koalition: Linke + Grüne + SPD — 95 Sitze (15 über der Mehrheit)"
+        let rows = ["| Partei | | Stimmen | Sitze |",
+                    "| Linke |  | 25,7 % +13,5 | 47 +25 |",
+                    "| CDU |  | 18,8 % \u{2212}9,4 | 34 \u{2212}12 |",
+                    "| AfD |  | 16,3 % +7,2 | 29 +12 |",
+                    "| Grüne |  | 14,3 % \u{2212}3,1 | 26 \u{2212}5 |",
+                    "| SPD |  | 12,1 % \u{2212}1,0 | 22 \u{2212}1 |"]
+        let body = (["Wahlergebnis Berlin", intro, coalitions] + rows + [intro, coalitions])
+            .joined(separator: "\n")
+        let stems = ["koalition", "sitze", "berlin", "verhandlung"]
+        let kept = ResearchAgent.State.extract(body, limit: 300, stems: stems)
+        for party in ["Linke", "CDU", "AfD", "Grüne", "SPD"] {
+            #expect(kept.contains("| \(party) |"), "missing \(party) in \(kept)")
+        }
+        #expect(kept.contains("| AfD | 16,3 % +7,2 | 29 +12 |"))
+        #expect(kept.count <= 300)
+        let row = "| Die Linke | 25,7 % | +13,4 | 47 | 28 |"
+        #expect(ResearchAgent.State.isTableRow(row))
+        #expect(ResearchAgent.State.compactRow("| Linke |  | 47 |") == "| Linke | 47 |")
+    }
+
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {
         let body = "Title line\nnothing here\nZeitungen in Berlin\nmore filler\nBerlin only"
         let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["berlin", "zeitun"])
