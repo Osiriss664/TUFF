@@ -1132,6 +1132,16 @@ public struct ResearchAgent: Sendable {
         // the window was refused by it (q3: 13.1k tokens and a 2,048 token reply
         // in a 16,384 token window). An overflow the estimate still misses is
         // refused by the server and keeps the cut-off answer (see `send`).
+        // Older results may be shortened to make room (everything from the
+        // request for the answer on stays whole, see `sealedFrom`): one cold
+        // request, against an answer that ends mid-sentence.
+        if state.size(overhead: toolCharacters) > continuationLimit(state) {
+            let sealed = state.sealedFrom
+            state.sealedFrom = min(sealed ?? before, before)
+            state.compact(toFit: continuationLimit(state), overhead: toolCharacters,
+                          targetShare: 1)
+            state.sealedFrom = sealed
+        }
         guard state.size(overhead: toolCharacters) <= continuationLimit(state) else {
             state.messages.removeLast(2)
             if !midSentence { onEvent(.keepingCutOffAnswerNoRoom) }
@@ -3622,9 +3632,14 @@ public struct ResearchAgent: Sendable {
             let lead = String(parts[0].prefix(min(leadCharacters, limit / 4)))
             var chosen: [Int: String] = [0: lead]
             var used = lead.count
+            // A passage that carries figures (a seat table, a result list) ranks
+            // above plain text that matches no keyword: the numbers are what an
+            // answer is checked against, and the start of a page rarely has them
+            // (Berlin on 7f85f1c lost every per-party seat count this way).
             let scores = parts.map { part in
                 let lower = part.lowercased()
                 return stems.filter { lower.contains($0) }.count
+                    + (Self.figureCount(part) >= 2 ? 1 : 0)
             }
             let ranked = parts.indices.dropFirst().filter { scores[$0] > 0 }
                 .sorted { scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1 }
@@ -3648,6 +3663,28 @@ public struct ResearchAgent: Sendable {
             }
             let text = chosen.keys.sorted().compactMap { chosen[$0] }.joined(separator: " … ")
             return String(text.prefix(limit))
+        }
+
+        /// How many numbers of two or more digits (or with a decimal comma or
+        /// point) a passage holds.
+        static func figureCount(_ text: String) -> Int {
+            var count = 0
+            var run = ""
+            func flush() {
+                if run.filter(\.isNumber).count >= 2 || (run.contains(where: \.isNumber)
+                    && run.contains(where: { ",.".contains($0) })
+                    && run.first?.isNumber == true && run.last?.isNumber == true) { count += 1 }
+                run = ""
+            }
+            for character in text {
+                if character.isNumber || (",.".contains(character) && !run.isEmpty) {
+                    run.append(character)
+                } else {
+                    flush()
+                }
+            }
+            flush()
+            return count
         }
 
         /// A page's text split into lines, and long lines into pieces of at

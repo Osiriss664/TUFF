@@ -3428,6 +3428,20 @@ struct ResearchAgentTests {
             == .string("Source [2]: Page 2\n(Earlier result shortened to save context.)"))
     }
 
+    @Test func extractPrefersPassagesWithFiguresOverPlainFiller() {
+        #expect(ResearchAgent.State.figureCount("Linke 47 Sitze, CDU 34") == 2)
+        #expect(ResearchAgent.State.figureCount("25,7 % der Stimmen") == 1)
+        #expect(ResearchAgent.State.figureCount("Es ist 5 vor zwölf") == 0)
+        let filler = (1...20).map { "Allgemeiner Text Nummer \($0) ohne Zahlen" }
+            .joined(separator: "\n").replacingOccurrences(of: "Nummer", with: "Zeile")
+            .components(separatedBy: .decimalDigits).joined()
+        let body = "Wahl in Berlin\n" + filler + "\nLinke 47 Sitze, CDU 34 Sitze\nGrüne 26, AfD 29"
+        let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["koalition"])
+        #expect(kept.contains("Linke 47 Sitze"))
+        #expect(kept.contains("AfD 29"))
+        #expect(kept.hasPrefix("Wahl in Berlin"))
+    }
+
     @Test func extractKeepsTheLeadAndMatchingPassagesInPageOrder() {
         let body = "Title line\nnothing here\nZeitungen in Berlin\nmore filler\nBerlin only"
         let kept = ResearchAgent.State.extract(body, limit: 200, stems: ["berlin", "zeitun"])
