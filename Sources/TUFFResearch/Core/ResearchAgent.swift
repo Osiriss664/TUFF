@@ -1136,11 +1136,17 @@ public struct ResearchAgent: Sendable {
         // request for the answer on stays whole, see `sealedFrom`): one cold
         // request, against an answer that ends mid-sentence.
         if state.size(overhead: toolCharacters) > continuationLimit(state) {
-            let sealed = state.sealedFrom
-            state.sealedFrom = min(sealed ?? before, before)
-            state.compact(toFit: continuationLimit(state), overhead: toolCharacters,
+            // Tried on a copy: if it still does not fit, the history stays as
+            // it was (a revision may follow on it, and the cache holds).
+            var trial = state
+            trial.sealedFrom = min(state.sealedFrom ?? before, before)
+            trial.compact(toFit: continuationLimit(trial), overhead: toolCharacters,
                           targetShare: 1)
-            state.sealedFrom = sealed
+            if trial.size(overhead: toolCharacters) <= continuationLimit(trial) {
+                trial.sealedFrom = state.sealedFrom
+                state = trial
+                onEvent(.shortenedOlderResults)
+            }
         }
         guard state.size(overhead: toolCharacters) <= continuationLimit(state) else {
             state.messages.removeLast(2)
@@ -3665,19 +3671,17 @@ public struct ResearchAgent: Sendable {
             return String(text.prefix(limit))
         }
 
-        /// How many numbers of two or more digits (or with a decimal comma or
-        /// point) a passage holds.
+        /// How many numbers of two or more digits a passage holds; a number may
+        /// contain a comma, point or colon (25,7, 11.10.2026, 14:30).
         static func figureCount(_ text: String) -> Int {
             var count = 0
             var run = ""
             func flush() {
-                if run.filter(\.isNumber).count >= 2 || (run.contains(where: \.isNumber)
-                    && run.contains(where: { ",.".contains($0) })
-                    && run.first?.isNumber == true && run.last?.isNumber == true) { count += 1 }
+                if run.filter(\.isNumber).count >= 2 { count += 1 }
                 run = ""
             }
             for character in text {
-                if character.isNumber || (",.".contains(character) && !run.isEmpty) {
+                if character.isNumber || (",.:".contains(character) && !run.isEmpty) {
                     run.append(character)
                 } else {
                     flush()
