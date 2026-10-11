@@ -99,8 +99,8 @@ public struct ResearchArguments: Equatable, Sendable {
     public static let preserveThinkingVariable = "TUFF_RESEARCH_PRESERVE_THINKING"
 
     /// The environment variable that chooses the markers around web text, for
-    /// comparing them on a Mac: `fixed` (the default, the same in every run)
-    /// or `nonce` (a random code per run). Not an option and not shown in the app.
+    /// comparing them on a Mac: `nonce` (the default, a random code per run)
+    /// or `fixed` (the same in every run). Not an option and not shown in the app.
     public static let markersVariable = "TUFF_RESEARCH_MARKERS"
 
     /// The environment variable that names a file for the messages of the

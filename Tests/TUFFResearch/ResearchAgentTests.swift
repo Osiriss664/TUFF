@@ -4028,7 +4028,7 @@ struct ResearchArgumentsTests {
     }
 
     @Test func researchSettingsAreParsed() throws {
-        let defaults = try ResearchArguments.parse(["q"])
+        let defaults = try ResearchArguments.parse(["q"], environment: [:])
         var expected = ResearchOptions.standard
         expected.currentDate = defaults.options.currentDate
         #expect(defaults.options == expected)
