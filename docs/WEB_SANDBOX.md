@@ -45,7 +45,8 @@ through the sandbox:
 
 Every request is signed with a secret made at each start, and an answer without
 the matching signature is thrown away, so another program on the Mac cannot
-pass for the sandbox. Local file search does not use the sandbox.
+pass for the sandbox. Local file search has its own switch and its own
+sandbox, described below.
 
 ## What it protects, and what it does not
 
@@ -63,7 +64,44 @@ sends a key. Other machines on your network and addresses your Mac gains after
 the start are not covered by the VM's block list. See
 [`Sandbox/README.md`](../Sandbox/README.md) for the full list.
 
-File access for the sandbox comes with a later change; this one has none.
+## File search in a sandbox
+
+**Settings > Search > Files > Read my search folders in a sandbox too** is a
+separate switch, off by default, with the same macOS and `container`
+requirements. With it on, the folders you add for file search are read by a
+second sandbox, a VM with **no network at all**, instead of by TUFF:
+
+- The VM has each folder mounted **read-only**. It lists the files and turns
+  text files and PDFs into passages; TUFF gets only paths, sizes and plain
+  text, removes control and invisible characters again, and keeps the index on
+  your Mac as before. A harmful PDF or text file meets the VM's limits and not
+  your Mac's files.
+- TUFF still decides what is indexed. Hidden files, build and dependency
+  folders, links, packages, deep folders and big files are skipped by TUFF's
+  own rules whatever the VM lists, and each file is looked at on the Mac again
+  before and after it is read; a file that changed meanwhile waits for the
+  next update.
+- The VM runs while TUFF indexes. It starts when indexing starts, is started
+  again with the new folders when you add or remove a folder, stops after 10
+  minutes without use and when TUFF quits, and stops when you turn the switch
+  off. Searching your index does not need it.
+- There is **no fallback**. If the VM cannot start, indexing stops with the
+  reason shown under the folder, and TUFF does not read the files itself.
+  Turning the switch on or off re-reads the folders with the other reader;
+  unchanged files are not read again.
+- macOS asks whether `container-runtime-linux` may read folders such as
+  Documents or Desktop. Allow it, or file search cannot read that folder; the
+  message under the folder says where to change it (**System Settings > Privacy
+  & Security > Files and Folders**). A folder whose path contains a comma or a
+  line break cannot be mounted and is reported as such. Your home folder, or a
+  folder that contains it, is refused (it would hand the VM your keys and app
+  data); add the folders inside it. At most 64 folders are mounted.
+
+What it does not do: the VM can read **everything inside the folders you add**,
+including files TUFF would skip, and the Mac's folder permissions (such as 0700)
+do not apply inside the VM. A hard link to a file outside the folder looks like
+an ordinary file and is readable; links to files and folders are not followed.
+Documents you attach to a chat are still read by TUFF itself.
 
 ## Developers
 

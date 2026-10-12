@@ -240,6 +240,13 @@ public actor AppLocalSearchIndex {
              .text("skipped"), .text(reason)])
     }
 
+    /// Forgets the files that were skipped, so the next update reads them
+    /// again. Used when the reader changes: a file one reader could not
+    /// handle may be fine for the other.
+    func forgetSkipped() throws {
+        try database.query("DELETE FROM files WHERE status != ?", [.text("indexed")])
+    }
+
     func forget(paths: [String]) throws {
         guard !paths.isEmpty else { return }
         try database.execute("BEGIN IMMEDIATE")
@@ -355,6 +362,33 @@ public actor AppLocalSearchIndex {
     }
 }
 
+/// Where the indexer gets the files of a folder and their passages from. The
+/// default is the Mac process itself (`AppLocalIndexer.scan` and `passages`);
+/// with the sandbox setting on it is a VM that has the folders mounted
+/// read-only, so a file the app cannot parse safely is never opened here.
+protocol AppLocalFileReading: Sendable {
+    /// The files to index, in the form `AppLocalIndexer.scan` gives them.
+    /// `previouslyIndexed` says the index already holds files of this
+    /// folder, so an empty answer is suspicious: it would forget them all.
+    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits,
+              previouslyIndexed: Bool) async throws
+        -> (files: [AppLocalIndexer.FoundFile], reachedLimit: Bool)
+    /// The passages of one file. Throws `AppLocalFileSkip` for a file that
+    /// cannot be indexed and `AppLocalFileChanged` for one that changed
+    /// while it was read; any other error stops the folder's update.
+    func passages(for file: AppLocalIndexer.FoundFile, in folder: AppSearchFolder,
+                  limits: AppLocalIndexLimits) async throws -> [(Int?, Int?, Int?, String)]
+}
+
+/// This file cannot be indexed (too large, unreadable, no text); `reason` is
+/// remembered so it is not tried again until it changes.
+struct AppLocalFileSkip: Error, Equatable {
+    let reason: String
+}
+
+/// The file changed while it was read: leave it for the next update.
+struct AppLocalFileChanged: Error, Equatable {}
+
 /// Walks the chosen folders and keeps the index current: new and changed
 /// files are read, deleted ones dropped, unchanged ones left alone. It runs at
 /// background priority, checks for cancellation between files, and waits
@@ -362,10 +396,18 @@ public actor AppLocalSearchIndex {
 public struct AppLocalIndexer: Sendable {
     public let index: AppLocalSearchIndex
     public let limits: AppLocalIndexLimits
+    /// nil: the app reads the folders itself.
+    let reader: (any AppLocalFileReading)?
 
     public init(index: AppLocalSearchIndex, limits: AppLocalIndexLimits = .standard) {
+        self.init(index: index, limits: limits, reader: nil)
+    }
+
+    init(index: AppLocalSearchIndex, limits: AppLocalIndexLimits = .standard,
+         reader: (any AppLocalFileReading)?) {
         self.index = index
         self.limits = limits
+        self.reader = reader
     }
 
     public func update(_ folder: AppSearchFolder,
@@ -380,9 +422,14 @@ public struct AppLocalIndexer: Sendable {
             status.lastError = "The folder is missing or TUFF can no longer read it."
             return status
         }
-        let found = try scan(folder)
-        status.reachedFileLimit = found.reachedLimit
         let known = try await index.indexedFiles(folder: folder.id)
+        let found: (files: [FoundFile], reachedLimit: Bool)
+        if let reader {
+            found = try await reader.scan(folder, limits: limits, previouslyIndexed: !known.isEmpty)
+        } else {
+            found = try scan(folder)
+        }
+        status.reachedFileLimit = found.reachedLimit
         let present = Set(found.files.map(\.path))
         try Task.checkCancellation()
         try await index.forget(paths: known.keys.filter { !present.contains($0) })
@@ -409,11 +456,21 @@ public struct AppLocalIndexer: Sendable {
                       stamp.size == file.size, abs(stamp.mtime - file.mtime) < 0.001 else {
                     continue
                 }
-                passages = try Self.passages(for: URL(fileURLWithPath: file.path),
-                                             size: file.size, limits: limits)
+                if let reader {
+                    passages = try await reader.passages(for: file, in: folder, limits: limits)
+                } else {
+                    passages = try Self.passages(for: URL(fileURLWithPath: file.path),
+                                                 size: file.size, limits: limits)
+                }
+            } catch is AppLocalFileChanged {
+                continue
             } catch {
+                // A problem with the sandbox itself says nothing about the
+                // file: it stops the update instead of marking files skipped.
+                if reader != nil, !(error is AppLocalFileSkip) { throw error }
+                let reason = (error as? AppLocalFileSkip)?.reason ?? "\(error)"
                 try await index.skip(path: file.path, folder: folder.id, size: file.size,
-                                     mtime: file.mtime, reason: "\(error)")
+                                     mtime: file.mtime, reason: reason)
                 status.skippedFiles += 1
                 status.pendingFiles -= 1
                 progress(status)

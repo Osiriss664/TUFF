@@ -35,6 +35,9 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
     var digestsAfterPull: [String]? = [FakeContainerWorld.digest]
     var logsOutput = ""
     var privilegeOutput = "10001 none"
+    /// What the check of `/proc/mounts` prints. When nil it is built from the
+    /// `--mount` options of the last `container run`, all read-only.
+    var mountOutputOverride: String?
     /// The listing `nft -nn list table inet tuff_sandbox_web` prints. When nil
     /// it is built from the blocked addresses of the last `container run`.
     var nftListingOverride: String?
@@ -93,6 +96,26 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
         guard let arguments = lastRunArguments,
               let value = arguments.first(where: { $0.hasPrefix(prefix) }) else { return [] }
         return value.dropFirst(prefix.count).split(separator: ",").map(String.init)
+    }
+
+    /// The `--mount` options of the last run, other than the secret's.
+    var lastRunFolderMounts: [String] {
+        guard let arguments = lastRunArguments else { return [] }
+        var found: [String] = []
+        for (index, argument) in arguments.enumerated()
+        where argument == "--mount" && index + 1 < arguments.count
+            && arguments[index + 1].contains("target=/files/") {
+            found.append(arguments[index + 1])
+        }
+        return found
+    }
+
+    /// The `/files/<id>` targets of the last run, sorted.
+    var lastRunFolderIDs: [String] {
+        lastRunFolderMounts.compactMap { option in
+            option.split(separator: ",").first { $0.hasPrefix("target=/files/") }
+                .map { String($0.dropFirst("target=/files/".count)) }
+        }.sorted()
     }
 
     /// The port of `--publish 127.0.0.1:PORT:9100` in the last run.
@@ -193,6 +216,9 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
         case "exec nft":
             return SandboxProcessResult(status: 0, output: nftListing())
         case "exec python3":
+            if arguments.last == SandboxProtection.mountCheck {
+                return SandboxProcessResult(status: 0, output: mountListing())
+            }
             return SandboxProcessResult(status: 0, output: privilegeOutput + "\n")
         case "image inspect":
             guard let digests = lock.withLock({ imageDigests }) else {
@@ -220,7 +246,35 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
 
     private func nftListing() -> String {
         if let override = lock.withLock({ nftListingOverride }) { return override }
+        if lastRunArguments?.contains("SANDBOX_PROFILE=files") == true { return Self.goodFilesNftListing() }
         return Self.goodNftListing(blocked: lastRunBlockedAddresses)
+    }
+
+    private func mountListing() -> String {
+        if let override = lock.withLock({ mountOutputOverride }) { return override }
+        return lastRunFolderIDs.map { "/files/\($0) ro\n" }.joined()
+    }
+
+    /// What `nft list table inet tuff_sandbox_files` prints for the table
+    /// `Sandbox/firewall-files.nft` makes.
+    static func goodFilesNftListing() -> String {
+        """
+        table inet tuff_sandbox_files {
+        \tchain output {
+        \t\ttype filter hook output priority filter; policy drop;
+        \t\toifname "lo" accept
+        \t\tct state established,related accept
+        \t}
+
+        \tchain input {
+        \t\ttype filter hook input priority filter; policy drop;
+        \t\tiifname "lo" accept
+        \t\tct state established,related accept
+        \t\tip saddr 192.168.64.1 tcp dport 9100 accept
+        \t}
+        }
+
+        """
     }
 
     /// What `nft -nn list table inet tuff_sandbox_web` prints for the table
@@ -301,6 +355,14 @@ final class FakeHealthProbe: SandboxHealthProbing, @unchecked Sendable {
     static func healthy(blocked: @escaping @Sendable () -> Int) -> FakeHealthProbe {
         FakeHealthProbe { _, _, _ in
             SandboxHealth(profile: "web", api: 1, blockedAddresses: blocked())
+        }
+    }
+
+    /// Answers like a healthy files sandbox that was given the folders of the
+    /// last `container run`.
+    static func healthyFiles(world: FakeContainerWorld) -> FakeHealthProbe {
+        FakeHealthProbe { _, _, _ in
+            SandboxHealth(profile: "files", api: 1, blockedAddresses: 0, folders: world.lastRunFolderIDs)
         }
     }
 
@@ -386,14 +448,17 @@ struct SandboxHarness {
                      requiredTeamIdentifier: String? = nil,
                      isInstalled: Bool = true,
                      freePort: Int = 49_152,
-                     healthAttempts: Int = 8) -> SandboxHarness {
+                     healthAttempts: Int = 8,
+                     profile: SandboxProfile = .web) -> SandboxHarness {
         let directory = stateDirectory ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("tuff-sandbox-test-\(UUID().uuidString)", isDirectory: true)
         let clock = FakeIdleClock()
         let blockedCount = BlockedCount()
-        let probe = FakeHealthProbe.healthy(blocked: { [world] in
-            blockedCount.value(default: world.lastRunBlockedAddresses.count)
-        })
+        let probe = profile == .files
+            ? FakeHealthProbe.healthyFiles(world: world)
+            : FakeHealthProbe.healthy(blocked: { [world] in
+                blockedCount.value(default: world.lastRunBlockedAddresses.count)
+            })
         let counter = NameCounter()
         let tool = ContainerTool(
             runner: world, path: FakeContainerWorld.containerPath,
@@ -402,13 +467,14 @@ struct SandboxHarness {
             tool: tool, probe: probe, pin: pin, stateDirectory: directory,
             addresses: { addresses },
             freePort: { freePort },
-            makeName: { SandboxController.containerNamePrefix + String(format: "%08d", counter.next()) },
+            makeName: { profile.namePrefix + String(format: "%08d", counter.next()) },
             osSupported: { osSupported },
             sleep: { try await clock.sleep($0) },
             idleTimeout: .seconds(600),
             healthAttempts: healthAttempts,
             healthInterval: .milliseconds(500),
-            quitRetryDelay: 0)
+            quitRetryDelay: 0,
+            profile: profile)
         return SandboxHarness(world: world, probe: probe, clock: clock, stateDirectory: directory,
                               controller: SandboxController(dependencies: dependencies),
                               blockedCount: blockedCount)
@@ -420,7 +486,7 @@ struct SandboxHarness {
 
     /// The folders under `secrets/`, one per start that has not been cleaned up.
     var secretFolders: [String] {
-        let secrets = SandboxLocations.secretsDirectory(in: stateDirectory)
+        let secrets = SandboxLocations.secretsDirectory(in: stateDirectory, profile: controller.profile)
         return ((try? FileManager.default.contentsOfDirectory(atPath: secrets.path)) ?? []).sorted()
     }
 }
