@@ -1,105 +1,87 @@
-> **This fork is retired.** The web research work has moved to a standalone companion app, SandSeek, which works with any local model server. Nothing new will be added here. Credit for TUFF itself stays with its author, [rexmhall09](https://github.com/rexmhall09), and the [original repository](https://github.com/rexmhall09/TUFF) is the place for downloads and support.
-
-# TUFF + Web Research (fork)
+# TUFF fork: a built-in sandbox for web research
 
 This is a personal fork of **[TUFF](https://github.com/rexmhall09/TUFF)** by
-[rexmhall09](https://github.com/rexmhall09). TUFF does all the hard work: it
-runs language models locally on Apple Silicon Macs, with a native Mac app, a
-Swift and Metal inference engine, command-line tools and a local
-OpenAI-compatible server. All credit for TUFF itself goes to its author and
-contributors. For TUFF downloads, documentation and support, please use the
-[original repository](https://github.com/rexmhall09/TUFF).
+[rexmhall09](https://github.com/rexmhall09). TUFF runs language models locally
+on Apple Silicon Macs, with a native Mac app, a Swift and Metal inference
+engine, command-line tools and a local OpenAI-compatible server. All credit for
+TUFF itself goes to its author and contributors. For downloads, documentation
+and support, please use the [original repository](https://github.com/rexmhall09/TUFF).
 
 TUFF's own README is unchanged and still lives at [README.md](https://github.com/Osiriss664/TUFF/blob/main/README.md).
 
-## My goal
+## What this fork is for
 
-I want a model running on my own Mac to be able to **research the web**
-safely: search, read pages, and write a short report with sources, without
-sending my questions to a cloud service and without giving the model any
-access to my computer.
+This fork is where I build and test the code for TUFF issue
+[#38](https://github.com/rexmhall09/TUFF/issues/38): **a sandbox built into
+TUFF**, so that TUFF's web research (and later its file search) runs inside a
+throwaway Linux VM made with [Apple container](https://github.com/apple/container),
+instead of directly on the Mac.
 
-The plan:
+The plan was agreed with TUFF's maintainer in the issue. In short:
 
-- **The model stays on the Mac.** TUFF serves it on `localhost` only.
-  Ollama works too, since both speak the same OpenAI-style API.
-- **The web stays in a sandbox.** Searching and fetching pages happen inside
-  a throwaway Linux VM made with
-  [Apple container](https://github.com/apple/container). The VM has a
-  firewall that only allows public internet addresses (plus name lookups
-  through the Mac), runs as a non-root user and has no access to my files or
-  to other services on the Mac.
-- **The model only gets web tools.** It can search and read pages, nothing
-  else: no shell, no running files, no writing to the Mac except the final
-  report. Everything that comes back from the web is treated as untrusted
-  text.
-- **Two ways to use it.** A `tuff research "your question"` command and a
-  Research screen in the Mac app.
+- **Off by default.** A new option in TUFF's settings turns the sandbox on. It
+  never switches itself on, and it is hidden on macOS versions older than 26.
+- **TUFF starts and stops the VM itself.** There is no fallback: when the
+  option is on and the sandbox can't run, web research doesn't run either.
+- **The web stays in the VM.** Searches and page fetches happen in the VM.
+  Pages and PDFs are turned into plain text there, so TUFF only gets finished
+  text. A firewall in the VM allows only public internet addresses, and the VM
+  runs as a non-root user with a read-only file system and no access to the
+  Mac's files.
+- **File search gets its own VM, with no network.** It sees only the folders
+  you pick, read-only.
+- **A prebuilt image.** TUFF downloads the sandbox image and checks its digest
+  before using it.
 
-## How it works, in short
+## How the work is split
 
-You ask a question. The model on your Mac decides what to search for, the
-sandbox VM runs the searches and reads the pages, and the model writes an
-answer with numbered sources. The research loop in between watches for
-shortcuts: if the model answers without reading any page, or cites a page it
-never opened, it is sent back to do it properly.
+The feature comes as four small pull requests, each on its own branch:
 
-```mermaid
-flowchart LR
-    Q([Your question]) --> L[Research loop]
-    L <--> M["Model in TUFF<br/>(on your Mac)"]
-    L <--> S["Sandbox VM<br/>(search and read)"]
-    S <--> W((Public internet))
-    L --> R([Answer with sources])
-```
+| # | Branch | What it adds |
+| --- | --- | --- |
+| 1 | [`sandbox/01-image`](https://github.com/Osiriss664/TUFF/tree/sandbox/01-image) | The sandbox image and the small web server inside it. No change to the app yet. |
+| 2 | `sandbox/02-lifecycle` | TUFF starts and stops the web VM. |
+| 3 | `sandbox/03-web` | Web research goes through the sandbox, and the settings option appears. |
+| 4 | `sandbox/04-files` | File search in a second VM without network access. |
 
-## Learn more
-
-| Page | What it covers |
-| --- | --- |
-| [How it works](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/how-it-works.md) | The research steps, the model's two tools and the safety nets for weak answers. |
-| [How it stays safe](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/safety.md) | The sandbox, the firewall, how it was tested and what it does not protect against. |
-| [Setup and use](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/setup.md) | What you need, how to build it, and how to use it in the app and in Terminal. |
-| [Test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md) | Real runs with Qwen3.6 and Gemma 4 on a 16 GB Mac. |
-| [Technical reference](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/technical.md) | For developers: components, the loop and its safeguards, the sandbox API and firewall, report format, configuration and tests. |
+Each one is tested on a Mac first and then merged into
+[`sandbox/integration`](https://github.com/Osiriss664/TUFF/tree/sandbox/integration).
+Only when the whole feature works there will the pull requests be offered to
+TUFF upstream, one at a time.
 
 ## Status
 
-This is a work in progress that I run and test on my own Mac first.
+- Pull request 1 is done and Mac-tested
+  ([fork PR #2](https://github.com/Osiriss664/TUFF/pull/2)).
+- Pull request 2 is in progress.
+- The code is written with Claude Code (an AI coding assistant), reviewed by
+  separate Claude sessions, and tested on my own Mac before it is pushed.
 
-- The feature lives on the
-  [`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
-  branch ([draft pull request](https://github.com/Osiriss664/TUFF/pull/1)).
-  It is not part of `main` and not in TUFF's own releases.
-- It works with Qwen3.6 35B-A3B, Gemma 4 26B-A4B and Gemma 4 E4B. In the
-  latest test, all 10 runs (5 questions, 2 models) finished with answers
-  that cite only pages that were really read.
-- Newest Mac-tested state: commit `f910282` (research tests 249 of 249,
-  app research tests 55 of 55). Since the last status: a cut-off answer is
-  continued when it fits the window, the model lists each source once, the
-  CLI says why a requested rewrite was not kept, the figure check has fewer
-  false alarms, and a repeated symbol at the seam of a continued answer is
-  dropped. Before that: round F, the refusal of private network addresses in
-  `open_page`, the merge of TUFF 8.3.1, and rounds C, D and E. Reading the
-  best matching passages first (round B) was tried on the Mac and stays off
-  by default. The cache miss at the switch to the answer turned out not to be
-  a bug. Open points include an unread source that can still survive in rare
-  cases. See the
-  [test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md).
-- It was written with Claude Code (an AI coding assistant) and has been
-  through several rounds of security review by a separate Claude session,
-  plus prompt-injection tests on my Mac.
-- The full technical guide is
-  [docs/WEB_RESEARCH.md](https://github.com/Osiriss664/TUFF/blob/feature/web-research/docs/WEB_RESEARCH.md)
-  on the feature branch.
-- I have asked the TUFF project whether they would like this feature, in a
-  [discussion](https://github.com/rexmhall09/TUFF/discussions/4).
+## Earlier research work
 
-The `main` branch here follows TUFF's own releases. This page and the pages
-in [.github/web-research](https://github.com/Osiriss664/TUFF/tree/main/.github/web-research) are the only additions to it.
+Before #38, this fork held a first version of web research for TUFF, on the
+[`feature/web-research`](https://github.com/Osiriss664/TUFF/tree/feature/web-research)
+branch ([draft pull request #1](https://github.com/Osiriss664/TUFF/pull/1)).
+It is no longer developed. The sandbox pull requests above reuse its tested
+parts (the sandbox server, page reading, firewall and injection tests). Its
+notes are kept for reference:
+[how it worked](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/how-it-works.md),
+[safety](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/safety.md),
+[setup](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/setup.md),
+[test results](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/test-results.md) and the
+[technical reference](https://github.com/Osiriss664/TUFF/blob/main/.github/web-research/technical.md).
+
+The standalone companion app [SandSeek](https://github.com/Osiriss664/SandSeek)
+grew out of the same research and works with any local model server.
+
+## About this fork's `main`
+
+The `main` branch follows TUFF's own releases. This page and the pages in
+[.github/web-research](https://github.com/Osiriss664/TUFF/tree/main/.github/web-research)
+are the only additions to it, and they are never part of a pull request.
 
 ## Credits and license
 
 - [TUFF](https://github.com/rexmhall09/TUFF) by rexmhall09, licensed under the
   [Apache License 2.0](https://github.com/Osiriss664/TUFF/blob/main/LICENSE). This fork keeps the same license.
-- [Apple container](https://github.com/apple/container) for the sandbox VM.
+- [Apple container](https://github.com/apple/container) for the sandbox VMs.
