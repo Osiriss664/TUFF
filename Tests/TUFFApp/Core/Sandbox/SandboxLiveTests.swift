@@ -23,14 +23,15 @@ import Testing
         let reference = try #require(Self.image)
         let tool = ContainerTool()
         try await tool.verify()
+        // The image's digest comes from the local store, read while the
+        // service is up (with COLD it is stopped right after); the controller
+        // then runs exactly that image and checks it again.
+        let inspected = try #require(await tool.inspectImage(reference), "image \(reference) is not in the local store")
+        let digest = try #require(SandboxImageProvisioner.indexDigest(in: inspected))
         if Self.cold {
             _ = try await FoundationSandboxProcessRunner().run(
                 executable: ContainerTool.installedPath, arguments: ["system", "stop"], timeout: 120)
         }
-        // Take the image's digest from the local store; the controller then
-        // runs exactly that and checks it again.
-        let inspected = try #require(await tool.inspectImage(reference), "image \(reference) is not in the local store")
-        let digest = try #require(SandboxImageProvisioner.digests(in: inspected).sorted().first)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("tuff sandbox live \(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }

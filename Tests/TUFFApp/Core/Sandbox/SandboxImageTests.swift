@@ -155,11 +155,23 @@ private final class ProgressLog: @unchecked Sendable {
         #expect(world.containerCalls == [["image", "inspect", registryPin().runReference]])
     }
 
-    @Test func anImageWithTheRightDigestAmongOthersIsAccepted() async throws {
+    @Test func theDigestOfAPlatformOrLayerIsNotTheImageDigest() async throws {
+        // Only the index digest counts; the pinned digest as a variant does not.
         let world = FakeContainerWorld()
         world.imageDigests = [FakeContainerWorld.otherDigest, FakeContainerWorld.digest]
         try await makeProvisioner(world).ensure(registryPin(), progress: { _ in })
-        #expect(world.count("image pull") == 0)
+        #expect(world.count("image pull") == 1)
+    }
+
+    @Test func theIndexDigestIsReadFromTheConfiguration() {
+        let output = FakeContainerWorld.inspectOutput([FakeContainerWorld.digest, FakeContainerWorld.otherDigest])
+        #expect(SandboxImageProvisioner.indexDigest(in: output) == FakeContainerWorld.digest)
+        #expect(SandboxImageProvisioner.indexDigest(in: "") == nil)
+        #expect(SandboxImageProvisioner.indexDigest(in: "[]") == nil)
+        #expect(SandboxImageProvisioner.indexDigest(in: "{}") == nil)
+        #expect(SandboxImageProvisioner.indexDigest(in: "[{\"configuration\": {}}]") == nil)
+        #expect(SandboxImageProvisioner.indexDigest(
+            in: "[{\"configuration\": {\"descriptor\": {\"digest\": \"sha256:abc\"}}}]") == nil)
     }
 
     @Test func aMissingImageIsPulledAndThenAccepted() async throws {
@@ -198,14 +210,14 @@ private final class ProgressLog: @unchecked Sendable {
             expected: FakeContainerWorld.digest, found: FakeContainerWorld.otherDigest))
     }
 
-    @Test func theMismatchNamesTheFirstFoundDigestInSortedOrder() async {
+    @Test func theMismatchNamesTheIndexDigestNotAPlatformDigest() async {
         let world = FakeContainerWorld()
         let low = "sha256:" + String(repeating: "11", count: 32)
         world.imageDigests = nil
         world.digestsAfterPull = [FakeContainerWorld.otherDigest, low]
         let provisioner = makeProvisioner(world)
         let error = await thrownError { try await provisioner.ensure(registryPin(), progress: { _ in }) }
-        #expect(error == SandboxError.digestMismatch(expected: FakeContainerWorld.digest, found: low))
+        #expect(error == SandboxError.digestMismatch(expected: FakeContainerWorld.digest, found: FakeContainerWorld.otherDigest))
     }
 
     @Test func noImageAfterThePullIsAMismatchWithNothingFound() async {

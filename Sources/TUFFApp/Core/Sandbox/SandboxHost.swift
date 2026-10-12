@@ -28,7 +28,7 @@ enum HostAddresses {
             let hostLength = socklen_t(host.count)
             if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, hostLength,
                            nil, 0, NI_NUMERICHOST) == 0 {
-                found.append(String(cString: host))
+                found.append(cString(host))
             }
         }
         return found
@@ -53,8 +53,11 @@ enum HostAddresses {
     /// The address as `inet_ntop` prints it, with a mapped IPv4 address
     /// reduced to the IPv4 form; nil for text that is not an address.
     static func canonical(_ text: String) -> String? {
+        // macOS accepts `fe80::1%en0` and puts the interface number into the
+        // address; a zone is removed by `normalized`, never passed on here.
+        guard !text.contains("%") else { return nil }
         var v4 = in_addr()
-        if inet_pton(AF_INET, text, &v4) == 1 { return render(&v4, family: AF_INET) }
+        if inet_pton(AF_INET, text, &v4) == 1 { return render(v4) }
         var v6 = in6_addr()
         guard inet_pton(AF_INET6, text, &v6) == 1 else { return nil }
         let bytes = withUnsafeBytes(of: &v6) { Array($0) }
@@ -63,16 +66,30 @@ enum HostAddresses {
             withUnsafeMutableBytes(of: &mapped) { target in
                 for index in 0..<4 { target[index] = bytes[12 + index] }
             }
-            return render(&mapped, family: AF_INET)
+            return render(mapped)
         }
-        return render(&v6, family: AF_INET6)
+        return render(v6)
     }
 
-    private static func render<T>(_ address: inout T, family: Int32) -> String? {
+    private static func render(_ value: in_addr) -> String? {
+        var address = value
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        let length = socklen_t(buffer.count)
+        guard inet_ntop(AF_INET, &address, &buffer, length) != nil else { return nil }
+        return cString(buffer)
+    }
+
+    private static func render(_ value: in6_addr) -> String? {
+        var address = value
         var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
         let length = socklen_t(buffer.count)
-        guard inet_ntop(family, &address, &buffer, length) != nil else { return nil }
-        return String(cString: buffer)
+        guard inet_ntop(AF_INET6, &address, &buffer, length) != nil else { return nil }
+        return cString(buffer)
+    }
+
+    /// The text of a C buffer up to its first zero byte.
+    private static func cString(_ buffer: [CChar]) -> String {
+        String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }
 

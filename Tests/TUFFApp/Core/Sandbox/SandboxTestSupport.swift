@@ -210,9 +210,12 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
     }
 
     static func inspectOutput(_ digests: [String]) -> String {
-        let items = digests.map { "{\"digest\": \"\($0)\"}" }
-        return "[{\"name\": \"image\", \"index\": \(items.first ?? "{}"), "
-            + "\"layers\": [\(items.joined(separator: ", "))]}]\n"
+        // The real layout: the first digest is the image index's
+        // (`configuration.descriptor`), the others are platform manifests.
+        let index = digests.first.map { "{\"digest\": \"\($0)\"}" } ?? "{}"
+        let variants = digests.dropFirst().map { "{\"digest\": \"\($0)\"}" }.joined(separator: ", ")
+        return "[{\"configuration\": {\"descriptor\": \(index)}, \"id\": \"image\", "
+            + "\"variants\": [\(variants)]}]\n"
     }
 
     private func nftListing() -> String {

@@ -52,27 +52,41 @@ struct SandboxImageProvisioner: Sendable {
         guard SandboxImagePin.isWellFormed(pin.digest), !pin.isPlaceholder else {
             throw SandboxError.imageNotPublished
         }
-        if let present = await tool.inspectImage(pin.runReference),
-           Self.digests(in: present).contains(pin.digest) {
-            return
-        }
+        let present = await tool.inspectImage(pin.runReference).flatMap(Self.indexDigest(in:))
+        if present == pin.digest { return }
         guard pin.source == .registry else {
-            throw SandboxError.digestMismatch(expected: pin.digest, found: nil)
+            throw SandboxError.digestMismatch(expected: pin.digest, found: present)
         }
         progress("Downloading the sandbox image")
         try await tool.pullImage(pin.runReference)
         guard let pulled = await tool.inspectImage(pin.runReference) else {
             throw SandboxError.digestMismatch(expected: pin.digest, found: nil)
         }
-        let found = Self.digests(in: pulled)
-        guard found.contains(pin.digest) else {
-            throw SandboxError.digestMismatch(expected: pin.digest, found: found.sorted().first)
+        let found = Self.indexDigest(in: pulled)
+        guard found == pin.digest else {
+            throw SandboxError.digestMismatch(expected: pin.digest, found: found)
         }
     }
 
-    /// Every `sha256:` digest in the output of `container image inspect`.
-    /// This is a plausibility check, not the guarantee: the guarantee is that
-    /// `container image pull ref@digest` fetches exactly that content.
+    /// The image's own digest in the output of `container image inspect`:
+    /// `[0].configuration.descriptor.digest`, the digest of the image index
+    /// that `ref@digest` names. The digests of its platforms (`variants`) and
+    /// layers do not count.
+    static func indexDigest(in output: String) -> String? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let first = root.first,
+              let configuration = first["configuration"] as? [String: Any],
+              let descriptor = configuration["descriptor"] as? [String: Any],
+              let digest = descriptor["digest"] as? String,
+              SandboxImagePin.isWellFormed(digest) else { return nil }
+        return digest
+    }
+
+    /// Every `sha256:` digest anywhere in the output of `container image
+    /// inspect`. `ensure` compares only `indexDigest(in:)`; the guarantee
+    /// behind it is that `container image pull ref@digest` fetches exactly
+    /// that content.
     static func digests(in output: String) -> Set<String> {
         Set(output.matches(of: #/sha256:[0-9a-f]{64}/#).map { String($0.output) })
     }
