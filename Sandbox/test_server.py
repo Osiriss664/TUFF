@@ -3196,10 +3196,10 @@ class FilesListTests(FilesTestCase):
         os.utime(path, (1_700_000_000, 1_700_000_123.5))
         self.assertEqual(self.listing(), {
             "entries": [{"path": "a/b.txt", "size": 5, "mtime": 1_700_000_123.5}],
-            "next_cursor": None})
+            "next_cursor": None, "unreadable": 0})
 
     def test_an_empty_folder_lists_nothing(self):
-        self.assertEqual(self.listing(), {"entries": [], "next_cursor": None})
+        self.assertEqual(self.listing(), {"entries": [], "next_cursor": None, "unreadable": 0})
 
     def test_the_walk_is_depth_first_by_name_with_files_and_directories_interleaved(self):
         for name in ("a.txt", "a/z.txt", "a/b/c.txt", "a-b.txt", "B.txt", "b/x.txt", "a/a.txt",
@@ -3769,7 +3769,7 @@ class FilesListBudgetTests(FilesTestCase):
         # Names examined in order: .h1 .h2 a (.h3 noext x.txt) b ...
         with mock.patch.object(server, "LIST_MAX_EXAMINED", 2):
             first = self.listing()
-        self.assertEqual(first, {"entries": [], "next_cursor": ".h2"})  # a cursor that is no listed file
+        self.assertEqual(first, {"entries": [], "next_cursor": ".h2", "unreadable": 0})  # a cursor that is no listed file
         with mock.patch.object(server, "LIST_MAX_EXAMINED", 2):
             second = self.listing(cursor=first["next_cursor"])
         self.assertEqual(second["entries"], [])
@@ -3838,6 +3838,30 @@ class FilesListBudgetTests(FilesTestCase):
                 cursor = page["next_cursor"]
         self.assertGreater(len(pages), 2)
         self.assertEqual([e["path"] for page in pages for e in page["entries"]], expected)
+
+    def test_a_page_always_examines_one_new_name_even_when_the_time_is_up(self):
+        for index in range(30):
+            self.write(f"big/f{index:02d}.txt")
+        self.write("z.txt")
+        late = server.FilesTools(root=self.base, clock=iter(range(1_000, 10**6)).__next__)
+        with mock.patch.object(server, "LIST_SECONDS", -1.0):  # past the deadline from the start
+            cursor, seen = "big/f10.txt", []
+            while cursor is not None:
+                page = late.list_files(FOLDER, cursor=cursor)
+                self.assertNotEqual(page["next_cursor"], cursor, "a page made no progress")
+                seen += [e["path"] for e in page["entries"]]
+                cursor = page["next_cursor"]
+        self.assertEqual(seen, [f"big/f{i:02d}.txt" for i in range(11, 30)] + ["z.txt"])
+
+    def test_one_new_name_is_examined_per_page_at_least(self):
+        self.write("a.txt")
+        self.write("b.txt")
+        late = server.FilesTools(root=self.base, clock=lambda: 10**9)
+        with mock.patch.object(server, "LIST_SECONDS", -1.0):
+            page = late.list_files(FOLDER)
+            self.assertEqual(([e["path"] for e in page["entries"]], page["next_cursor"]), (["a.txt"], "a.txt"))
+            page = late.list_files(FOLDER, cursor="a.txt")
+            self.assertEqual(([e["path"] for e in page["entries"]], page["next_cursor"]), (["b.txt"], None))
 
     def test_the_defaults(self):
         self.assertEqual((server.LIST_MAX_EXAMINED, server.LIST_SECONDS, server.LIST_MAX_BYTES),
@@ -3913,6 +3937,98 @@ class FilesListBudgetTests(FilesTestCase):
             page = self.listing()
         self.assertEqual(len(page["entries"]), 1)
         self.assertEqual(page["next_cursor"], page["entries"][0]["path"])
+
+
+class FilesUnreadableTests(FilesTestCase):
+    """What could not be read is said, not hidden."""
+
+    def failing_listdir(self, *endings, error=None):
+        """os.listdir that fails for the directories whose path ends so (the
+        mode of a directory means nothing to root, so the failure is made)."""
+        real = os.listdir
+        error = error or PermissionError(errno.EACCES, "denied")
+
+        def listdir(target):
+            if isinstance(target, int):
+                path = os.readlink(f"/proc/self/fd/{target}")
+                if any(path.endswith(ending) for ending in endings):
+                    raise error
+            return real(target)
+
+        return mock.patch.object(server.os, "listdir", listdir)
+
+    def test_directories_that_cannot_be_listed_are_counted_once_each(self):
+        for name in ("a/x.txt", "b/y.txt", "c/z.txt", "c/sub/w.txt"):
+            self.write(name)
+        with self.failing_listdir("/a", "/c"):
+            page = self.listing()
+        self.assertEqual([e["path"] for e in page["entries"]], ["b/y.txt"])
+        self.assertEqual(page["unreadable"], 2)
+        self.assertIsNone(page["next_cursor"])
+
+    def test_another_error_counts_as_well(self):
+        self.write("a/x.txt")
+        self.write("b/y.txt")
+        with self.failing_listdir("/a", error=OSError(errno.EIO, "input/output error")):
+            page = self.listing()
+        self.assertEqual((page["unreadable"], [e["path"] for e in page["entries"]]), (1, ["b/y.txt"]))
+
+    def test_a_directory_that_cannot_be_opened_is_counted(self):
+        self.write("a/x.txt")
+        self.write("b/y.txt")
+        real = os.open
+
+        def opening(name, *arguments, **keywords):
+            if name == "a" and "dir_fd" in keywords:
+                raise PermissionError(errno.EACCES, "denied")
+            return real(name, *arguments, **keywords)
+
+        with mock.patch.object(server.os, "open", opening):
+            page = self.listing()
+        self.assertEqual((page["unreadable"], [e["path"] for e in page["entries"]]), (1, ["b/y.txt"]))
+
+    def test_nothing_unreadable_is_zero(self):
+        self.write("a/x.txt")
+        self.assertEqual(self.listing()["unreadable"], 0)
+
+    def test_the_pages_counts_add_up_to_the_total_without_counting_a_directory_twice(self):
+        for name in ("a/x.txt", "b/y.txt", "c/z.txt", "d/w.txt"):
+            self.write(name)
+        with self.failing_listdir("/a", "/c"):
+            first = self.listing(limit=1)
+            second = self.listing(cursor=first["next_cursor"], limit=1)
+        # The first page walked a (unreadable) and b, then looked ahead into c and d.
+        # c is walked again by the second page and counted there only.
+        self.assertEqual((first["entries"][0]["path"], first["unreadable"]), ("b/y.txt", 1))
+        self.assertEqual((second["entries"][0]["path"], second["unreadable"]), ("d/w.txt", 1))
+        self.assertIsNone(second["next_cursor"])
+
+    def test_a_folder_whose_top_level_cannot_be_listed_is_403(self):
+        self.write("a/x.txt")
+        with self.failing_listdir("/" + FOLDER):
+            error = self.assertRefused(403, "folder_unreadable", self.tools.list_files, FOLDER)
+        self.assertEqual(error.message, "the folder cannot be read")
+        with self.failing_listdir("/" + FOLDER, error=PermissionError(errno.EPERM, "not permitted")):
+            self.assertRefused(403, "folder_unreadable", self.tools.list_files, FOLDER)
+
+    def test_a_folder_that_cannot_be_opened_is_403_and_a_missing_one_is_404(self):
+        real = os.open
+
+        def opening(name, *arguments, **keywords):
+            if name.endswith(FOLDER):
+                raise PermissionError(errno.EACCES, "denied")
+            return real(name, *arguments, **keywords)
+
+        with mock.patch.object(server.os, "open", opening):
+            self.assertRefused(403, "folder_unreadable", self.tools.list_files, FOLDER)
+            self.assertRefused(403, "folder_unreadable", self.tools.passages, FOLDER, "a.txt")
+        self.assertRefused(404, "not_found", self.tools.list_files, OTHER_FOLDER)
+
+    def test_another_error_listing_the_top_level_is_counted_not_403(self):
+        self.write("a.txt")
+        with self.failing_listdir("/" + FOLDER, error=OSError(errno.EIO, "input/output error")):
+            page = self.listing()
+        self.assertEqual((page["entries"], page["unreadable"]), ([], 1))
 
 
 class FilesOpenTests(FilesTestCase):

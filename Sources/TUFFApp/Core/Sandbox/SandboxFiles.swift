@@ -39,9 +39,10 @@ struct SandboxFileReader: AppLocalFileReading {
         }
         let entries: [Entry]
         let nextCursor: String?
+        let unreadable: Int?
 
         enum CodingKeys: String, CodingKey {
-            case entries
+            case entries, unreadable
             case nextCursor = "next_cursor"
         }
     }
@@ -71,13 +72,12 @@ struct SandboxFileReader: AppLocalFileReading {
 
     // MARK: Scan
 
-    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits,
-              previouslyIndexed: Bool) async throws
+    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits) async throws
         -> (files: [AppLocalIndexer.FoundFile], reachedLimit: Bool) {
         guard SandboxFolderMount.isMountable(folder.path) else {
             throw AppLocalSearchError.index(SandboxFilesFailure.unmountable)
         }
-        guard !SandboxFolderMount.isTooBroad(folder.path) else {
+        guard !SandboxFolderMount.isTooBroad(canonicalPath(folder.path) ?? folder.path) else {
             throw AppLocalSearchError.index(SandboxFilesFailure.tooBroad)
         }
         guard let canonicalRoot = canonicalPath(folder.path) else {
@@ -89,12 +89,9 @@ struct SandboxFileReader: AppLocalFileReading {
         var seen = Set<String>()
         var packages: [String: Bool] = [:]
         var cursor: String?
-        // What the Mac itself sees in the folder tells an empty answer that
-        // is true from one that macOS caused by refusing the sandbox access.
-        func emptyAnswerIsSuspicious() -> Bool {
-            Self.macSeesIndexableFiles(in: canonicalRoot)
-                || (previouslyIndexed && Self.macSeesAnyEntry(in: canonicalRoot))
-        }
+        // Directories the sandbox could not read (macOS refusing it access
+        // to a part of the folder is the likely reason), over all pages.
+        var unreadable = 0
         for _ in 0..<Self.maximumListPages {
             try Task.checkCancellation()
             let request = ListRequest(folder: id, cursor: cursor, limit: Self.listPageSize)
@@ -113,7 +110,9 @@ struct SandboxFileReader: AppLocalFileReading {
             } catch {
                 throw SandboxFilesFailure.malformed
             }
-            guard answer.entries.count <= Self.listPageSize else { throw SandboxFilesFailure.malformed }
+            guard answer.entries.count <= Self.listPageSize,
+                  (answer.unreadable ?? 0) >= 0 else { throw SandboxFilesFailure.malformed }
+            unreadable += answer.unreadable ?? 0
             for entry in answer.entries {
                 guard let found = Self.accept(entry.path, size: entry.size, mtime: entry.mtime,
                                               rootPath: rootPath, limits: limits, packages: &packages),
@@ -122,7 +121,10 @@ struct SandboxFileReader: AppLocalFileReading {
                 if files.count >= limits.maximumFilesPerFolder { return (files, true) }
             }
             guard let next = answer.nextCursor else {
-                if files.isEmpty, emptyAnswerIsSuspicious() {
+                // A list with nothing in it, while the sandbox could not read
+                // part of the folder or the Mac sees a file it would index,
+                // is not believed: it would make the index forget its files.
+                if files.isEmpty, unreadable > 0 || Self.macSeesIndexableFiles(in: canonicalRoot) {
                     throw AppLocalSearchError.index(SandboxError.folderAccessDenied.description)
                 }
                 return (files, false)
@@ -202,11 +204,6 @@ struct SandboxFileReader: AppLocalFileReading {
               !cursor.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         return !cursor.split(separator: "/", omittingEmptySubsequences: false)
             .contains { $0.isEmpty || $0 == "." || $0 == ".." }
-    }
-
-    /// Whether the folder has any entry that is not hidden.
-    static func macSeesAnyEntry(in root: String) -> Bool {
-        ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).contains { !$0.hasPrefix(".") }
     }
 
     /// Whether the Mac itself sees a file the app would index in the folder
@@ -339,11 +336,13 @@ enum SandboxFilesFailure {
     static func map(_ error: Error) -> Error {
         if error is CancellationError { return error }
         if error is AppLocalSearchError || error is SandboxError { return error }
+        if case SandboxClientError.remote(_, "folder_unreadable", _) = error {
+            return AppLocalSearchError.index(SandboxError.folderAccessDenied.description)
+        }
         if case SandboxClientError.remote(_, "not_found", _) = error {
             return AppLocalSearchError.index(
-                "The file sandbox does not have this folder. It was probably added after the sandbox started, "
-                    + "or macOS did not let the sandbox open it (see System Settings > Privacy & Security > "
-                    + "Files and Folders for \u{201C}container-runtime-linux\u{201D}).")
+                "The file sandbox does not have this folder. It may have been added after the sandbox "
+                    + "started, or there are more than \(SandboxFolderMount.maximumCount) folders.")
         }
         if let error = error as? SandboxClientError {
             return AppLocalSearchError.index(sentence(error.description))

@@ -3265,6 +3265,7 @@ public final class AppModel {
             toolStore.indexInSandbox = newValue
             persistSettings()
             #if os(macOS)
+            filesSandboxTask?.cancel()
             filesSandboxTask = Task { [weak self] in await self?.applyFilesSandboxSetting() }
             #endif
         }

@@ -368,10 +368,7 @@ public actor AppLocalSearchIndex {
 /// read-only, so a file the app cannot parse safely is never opened here.
 protocol AppLocalFileReading: Sendable {
     /// The files to index, in the form `AppLocalIndexer.scan` gives them.
-    /// `previouslyIndexed` says the index already holds files of this
-    /// folder, so an empty answer is suspicious: it would forget them all.
-    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits,
-              previouslyIndexed: Bool) async throws
+    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits) async throws
         -> (files: [AppLocalIndexer.FoundFile], reachedLimit: Bool)
     /// The passages of one file. Throws `AppLocalFileSkip` for a file that
     /// cannot be indexed and `AppLocalFileChanged` for one that changed
@@ -422,14 +419,14 @@ public struct AppLocalIndexer: Sendable {
             status.lastError = "The folder is missing or TUFF can no longer read it."
             return status
         }
-        let known = try await index.indexedFiles(folder: folder.id)
         let found: (files: [FoundFile], reachedLimit: Bool)
         if let reader {
-            found = try await reader.scan(folder, limits: limits, previouslyIndexed: !known.isEmpty)
+            found = try await reader.scan(folder, limits: limits)
         } else {
             found = try scan(folder)
         }
         status.reachedFileLimit = found.reachedLimit
+        let known = try await index.indexedFiles(folder: folder.id)
         let present = Set(found.files.map(\.path))
         try Task.checkCancellation()
         try await index.forget(paths: known.keys.filter { !present.contains($0) })

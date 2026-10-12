@@ -619,10 +619,10 @@ except Exception:
 
     echo "The sample folder is read-only:"
     mounts="$(in_vm awk -v target="/files/$files_id" '$2 == target { print $4 }' /proc/mounts 2>/dev/null || true)"
-    # How the mount is shown depends on the container version; the write
-    # attempts below decide.
+    # The app refuses the sandbox when a /files mount is not read-only, so the
+    # mount table must say ro (the write attempts below show the same from inside).
     [[ ",$mounts," == *",ro,"* ]] && pass "/files/$files_id is mounted read-only (/proc/mounts: $mounts)" \
-      || echo "  warn  /proc/mounts does not show /files/$files_id as ro: ${mounts:-not found} (the write attempts below decide)"
+      || fail "/files/$files_id is not mounted read-only: ${mounts:-not found}"
     if in_vm sh -c "touch /files/$files_id/new-file" >/dev/null 2>&1; then
       fail "a file could be created in the sample folder (as root)"
     else

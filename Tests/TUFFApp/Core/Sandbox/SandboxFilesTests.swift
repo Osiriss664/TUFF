@@ -387,7 +387,7 @@ extension SandboxStubTests {
                 return listReply([("sub/c.swift", 30, 1_700_000_200)])
             }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             #expect(result.reachedLimit == false)
             let root = canonicalPath(h.folder.path) ?? h.folder.path
             #expect(result.files.map(\.path) == [root + "/a.md", root + "/sub/b.txt", root + "/sub/c.swift"])
@@ -422,7 +422,7 @@ extension SandboxStubTests {
                 ])
             }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             let root = (canonicalPath(h.folder.path) ?? h.folder.path) + "/"
             let names = result.files.map { String($0.path.dropFirst(root.count)) }
             #expect(names == ["good.md", "README", atLimit])
@@ -433,7 +433,7 @@ extension SandboxStubTests {
             let h = try await FilesHarness.ready { _ in listReply([("a.md", 1, 1_700_000_000)], next: "a.md") }
             defer { h.cleanUp() }
             await #expect(throws: AppLocalSearchError.self) {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
             }
             #expect(SandboxStubProtocol.seen.count == 2)
         }
@@ -448,7 +448,7 @@ extension SandboxStubTests {
                 }
             }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             let root = (canonicalPath(h.folder.path) ?? h.folder.path) + "/"
             #expect(result.files.map { String($0.path.dropFirst(root.count)) } == ["a.md", "b.md"])
             let seen = SandboxStubProtocol.seen
@@ -460,7 +460,7 @@ extension SandboxStubTests {
             let h = try await FilesHarness.ready { _ in listReply([("a.md", 1, 1_700_000_000)], next: "../x") }
             defer { h.cleanUp() }
             await #expect(throws: AppLocalSearchError.self) {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
             }
         }
 
@@ -471,29 +471,62 @@ extension SandboxStubTests {
                 return listReply([("f\(n).txt", 1, 1_700_000_000)], next: "f\(n).txt")
             }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             #expect(result.reachedLimit)
             #expect(result.files.count == SandboxFileReader.maximumListPages)
         }
 
-        @Test func anEmptyListForAFolderThatWasIndexedIsNotBelievedWhileTheMacSeesEntries() async throws {
-            let h = try await FilesHarness.ready(files: ["Projects/2024/deep.pdf"]) { _ in listReply([]) }
+        @Test func anEmptyListWithUnreadableDirectoriesIsNotBelieved() async throws {
+            let h = try await FilesHarness.ready(files: ["Projects/2024/deep.pdf"]) { _ in
+                SandboxStubProtocol.json(["entries": [], "next_cursor": NSNull(), "unreadable": 2])
+            }
             defer { h.cleanUp() }
             do {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: true)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
                 Issue.record("expected an error")
             } catch {
                 #expect("\(error)".contains("container-runtime-linux"))
             }
-            // The same folder that was never indexed: nothing to lose.
-            let fresh = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
-            #expect(fresh.files.isEmpty)
         }
 
-        @Test func anEmptyListForAFolderThatReallyIsEmptyIsBelievedEvenIfItWasIndexed() async throws {
+        @Test func unreadableDirectoriesDoNotHideTheFilesThatWereListed() async throws {
+            let h = try await FilesHarness.ready { _ in
+                SandboxStubProtocol.json([
+                    "entries": [["path": "a.md", "size": 1, "mtime": 1_700_000_000.0]],
+                    "next_cursor": NSNull(), "unreadable": 1])
+            }
+            defer { h.cleanUp() }
+            let result = try await h.reader.scan(h.folder, limits: .standard)
+            #expect(result.files.count == 1)
+        }
+
+        @Test func aNegativeUnreadableCountIsRefused() async throws {
+            let h = try await FilesHarness.ready { _ in
+                SandboxStubProtocol.json(["entries": [], "next_cursor": NSNull(), "unreadable": -1])
+            }
+            defer { h.cleanUp() }
+            await #expect(throws: AppLocalSearchError.self) {
+                _ = try await h.reader.scan(h.folder, limits: .standard)
+            }
+        }
+
+        @Test func aFolderTheSandboxCannotReadNamesWhereToAllowIt() async throws {
+            let h = try await FilesHarness.ready { _ in
+                SandboxStubProtocol.failure("folder_unreadable", "the folder cannot be read", status: 403)
+            }
+            defer { h.cleanUp() }
+            do {
+                _ = try await h.reader.scan(h.folder, limits: .standard)
+                Issue.record("expected an error")
+            } catch {
+                #expect("\(error)".contains("container-runtime-linux"))
+            }
+        }
+
+        @Test func aFolderThatReallyIsEmptyIsBelieved() async throws {
             let h = try await FilesHarness.ready { _ in listReply([]) }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: true)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             #expect(result.files.isEmpty)
         }
 
@@ -505,7 +538,7 @@ extension SandboxStubTests {
             try FileManager.default.createSymbolicLink(
                 at: h.root.appendingPathComponent("link"),
                 withDestinationURL: h.root.appendingPathComponent("real"))
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             let root = (canonicalPath(h.folder.path) ?? h.folder.path) + "/"
             #expect(result.files.map { String($0.path.dropFirst(root.count)) } == ["real/inside.md"])
         }
@@ -513,6 +546,11 @@ extension SandboxStubTests {
         @Test func theHomeFolderAndFoldersAboveItAreTooBroad() {
             #expect(SandboxFolderMount.isTooBroad("/Users/test", home: "/Users/test"))
             #expect(SandboxFolderMount.isTooBroad("/Users", home: "/Users/test"))
+            // A real folder is its own home, and the folder above it contains it.
+            let real = FileManager.default.temporaryDirectory.path
+            #expect(SandboxFolderMount.isTooBroad(real, home: real))
+            #expect(SandboxFolderMount.isTooBroad(
+                FileManager.default.temporaryDirectory.deletingLastPathComponent().path, home: real))
             #expect(!SandboxFolderMount.isTooBroad("/Users/test/Documents", home: "/Users/test"))
             #expect(!SandboxFolderMount.isTooBroad("/Users/tester", home: "/Users/test"))
             #expect(!SandboxFolderMount.isTooBroad("/Volumes/Data", home: "/Users/test"))
@@ -525,7 +563,7 @@ extension SandboxStubTests {
             defer { h.cleanUp() }
             var limits = AppLocalIndexLimits()
             limits.maximumFilesPerFolder = 4
-            let result = try await h.reader.scan(h.folder, limits: limits, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: limits)
             #expect(result.files.count == 4)
             #expect(result.reachedLimit)
         }
@@ -534,7 +572,7 @@ extension SandboxStubTests {
             let h = try await FilesHarness.ready(files: ["notes.md"]) { _ in listReply([]) }
             defer { h.cleanUp() }
             do {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
                 Issue.record("expected an error")
             } catch {
                 #expect("\(error)".contains("container-runtime-linux"))
@@ -544,7 +582,7 @@ extension SandboxStubTests {
         @Test func nothingListedInAFolderWithNothingToIndexIsFine() async throws {
             let h = try await FilesHarness.ready(files: ["pic.png"]) { _ in listReply([]) }
             defer { h.cleanUp() }
-            let result = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+            let result = try await h.reader.scan(h.folder, limits: .standard)
             #expect(result.files.isEmpty)
         }
 
@@ -553,7 +591,7 @@ extension SandboxStubTests {
             defer { h.cleanUp() }
             let odd = AppSearchFolder(id: h.folder.id, path: h.folder.path + "/a,b")
             await #expect(throws: AppLocalSearchError.self) {
-                _ = try await h.reader.scan(odd, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(odd, limits: .standard)
             }
             #expect(SandboxStubProtocol.seen.isEmpty)
         }
@@ -564,7 +602,7 @@ extension SandboxStubTests {
             }
             defer { h.cleanUp() }
             do {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
                 Issue.record("expected an error")
             } catch {
                 #expect("\(error)".contains("does not have this folder"))
@@ -577,7 +615,7 @@ extension SandboxStubTests {
             }
             defer { h.cleanUp() }
             await #expect(throws: AppLocalSearchError.self) {
-                _ = try await h.reader.scan(h.folder, limits: .standard, previouslyIndexed: false)
+                _ = try await h.reader.scan(h.folder, limits: .standard)
             }
         }
     }
@@ -743,8 +781,7 @@ private struct StubReader: AppLocalFileReading {
     var files: [String: (size: Int, mtime: Double)] = [:]
     var onPassages: @Sendable (String) throws -> [(Int?, Int?, Int?, String)]
 
-    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits,
-              previouslyIndexed: Bool) async throws
+    func scan(_ folder: AppSearchFolder, limits: AppLocalIndexLimits) async throws
         -> (files: [AppLocalIndexer.FoundFile], reachedLimit: Bool) {
         let root = (canonicalPath(folder.path) ?? folder.path) + "/"
         return (files.keys.sorted().map {

@@ -88,7 +88,14 @@ paths are unknown here, and the two paths below are unknown in the web profile.
 
 - `POST /v1/files/list` takes `{"folder", "cursor"?, "limit"?}` (`limit` 1 to
   2000, default 1000) and answers `{"entries": [{"path", "size", "mtime"}],
-  "next_cursor": path or null}`. Only regular files are listed, depth first, by
+  "next_cursor": path or null, "unreadable": int}`. `unreadable` is how many
+  directories on this page could not be listed or opened (permission denied or
+  any other error), each counted once; they are skipped, so a folder that is
+  only partly readable lists what it can, and the count says it is not
+  complete. A directory that the next page walks again is counted there, not on
+  both. If the folder's own top level cannot be listed or opened for lack of
+  permission, the answer is 403 `folder_unreadable` ("the folder cannot be
+  read"); a folder that is not mounted stays 404 `not_found`. Only regular files are listed, depth first, by
   name at every level, files and directories interleaved. Hidden names,
   symbolic links, `.git`, `node_modules`, `build`, `dist` and the other build
   directories listed in `server.py`, anything deeper than 24 levels and files
@@ -102,7 +109,8 @@ paths are unknown here, and the two paths below are unknown in the web profile.
   fewer than `limit` entries, even none, with `next_cursor` set; the cursor is
   then the last entry examined, which need not be a listed file (it can be a
   hidden name, a skipped directory or a file without extension), and keep
-  following it until it is null.
+  following it until it is null. A page always examines at least one new
+  name, so its cursor moves on even when the time is already used up.
 - `POST /v1/files/passages` takes `{"folder", "path"}` and answers `{"size",
   "mtime", "passages": [{"page", "line_start", "line_end", "text"}]}`. A `.pdf`
   is read page by page with pypdf in a child process (60 seconds, 512 MiB, one
@@ -117,7 +125,7 @@ paths are unknown here, and the two paths below are unknown in the web profile.
   4,000,000 characters of text in all is refused (`oversized`). `size` and `mtime` are those of the open file and are checked
   again after reading; a file that changed meanwhile is `changed_while_reading`.
 - Errors are `{"error": {"message", "code"}}`: `invalid_folder` and
-  `invalid_path` (400), `not_found` (404), `not_a_file`, `oversized`,
+  `invalid_path` (400), `folder_unreadable` (403), `not_found` (404), `not_a_file`, `oversized`,
   `too_many_passages`, `unreadable`, `empty` (422), `changed_while_reading` (409),
   `pdf_busy` (503). Messages never contain file contents.
 

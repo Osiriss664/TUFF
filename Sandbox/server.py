@@ -87,7 +87,12 @@ only other paths are
 (the web paths are unknown here, and these are unknown in the web profile). A
 list page ends after LIST_MAX_BYTES of entries, LIST_MAX_EXAMINED directory
 entries or LIST_SECONDS, whichever comes first, and next_cursor is then the last
-entry examined, listed or not (a page may be short or empty).
+entry examined, listed or not (a page may be short or empty). A page always
+examines at least one new name, so its cursor moves on. The list answer is
+{"entries", "next_cursor", "unreadable"}: "unreadable" counts the directories on
+that page that could not be listed or opened (each counted once; a directory the next
+page walks again is counted there). A folder whose top level cannot be
+listed or opened for lack of permission is 403 `folder_unreadable`.
 Signing, the request limits and the dropped privileges are the same as above;
 privileges are dropped before any file is read. A path is relative, `/`
 separated, without empty, `.` or `..` components. Every component is opened
@@ -1533,13 +1538,15 @@ def read_descriptor(descriptor: int, limit: int) -> bytes:
 class _Budget:
     """The work one list page may do: LIST_MAX_EXAMINED directory entries, or
     until `deadline`. `last` is the path (components) of the last entry
-    examined, `spent` is set when the walk stopped for lack of budget."""
+    examined, `spent` is set when the walk stopped for lack of budget, and
+    `unreadable` counts the directories this page could not list or open."""
 
     def __init__(self, deadline: float):
         self.deadline = deadline
         self.examined = 0
         self.last: list[str] | None = None
         self.spent = False
+        self.unreadable = 0
 
 
 @dataclass
@@ -1568,7 +1575,9 @@ class FilesTools:
     def _open_root(self, folder: str) -> int:
         try:
             return os.open(os.path.join(self.root, check_folder_id(folder)), DIRECTORY_FLAGS)
-        except OSError:
+        except OSError as error:
+            if error.errno in (errno.EACCES, errno.EPERM):
+                raise ToolError("the folder cannot be read", "folder_unreadable", 403) from None
             raise ToolError("folder is not mounted", "not_found", 404) from None
 
     @staticmethod
@@ -1642,6 +1651,7 @@ class FilesTools:
         entries: list[dict] = []
         next_cursor = None
         size = 0
+        unreadable = 0  # as of the last entry kept: what comes after is walked again by the next page
         try:
             for path, info in walk:
                 entry = {"path": path, "size": info.st_size, "mtime": info.st_mtime}
@@ -1651,7 +1661,9 @@ class FilesTools:
                     break
                 entries.append(entry)
                 size += weight
+                unreadable = budget.unreadable
             else:
+                unreadable = budget.unreadable
                 if budget.spent:
                     # The page ran out of work, not of files. Everything up to the
                     # last entry examined is done, listed or not.
@@ -1659,7 +1671,7 @@ class FilesTools:
         finally:
             walk.close()  # closes the directories the walk holds open
             os.close(root)
-        return {"entries": entries, "next_cursor": next_cursor}
+        return {"entries": entries, "next_cursor": next_cursor, "unreadable": unreadable}
 
     def _walk(self, directory: int, parts: list[str], resume: list[str] | None, budget: _Budget):
         """Yields (relative path, lstat) of the regular files below the open
@@ -1670,8 +1682,11 @@ class FilesTools:
         checks `budget`; when that is used up the walk ends (`budget.spent`)."""
         try:
             names = sorted(os.listdir(directory))
-        except OSError:
-            return  # a directory that cannot be read is skipped
+        except OSError as error:
+            if not parts and error.errno in (errno.EACCES, errno.EPERM):
+                raise ToolError("the folder cannot be read", "folder_unreadable", 403) from None
+            budget.unreadable += 1  # a directory that cannot be read is skipped, and counted
+            return
         for name in names:
             if resume and name < resume[0]:
                 continue
@@ -1682,7 +1697,8 @@ class FilesTools:
                 continue
             # The names on the way to the cursor were counted by the page before.
             if not on_cursor:
-                if budget.examined >= LIST_MAX_EXAMINED or self.clock() > budget.deadline:
+                if budget.examined >= LIST_MAX_EXAMINED or (
+                        budget.examined and self.clock() > budget.deadline):
                     budget.spent = True
                     return
                 budget.examined += 1
@@ -1699,6 +1715,7 @@ class FilesTools:
                 try:
                     child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory)
                 except OSError:
+                    budget.unreadable += 1
                     continue
                 try:
                     yield from self._walk(child, parts + [name],

@@ -59,11 +59,25 @@ struct SandboxFolderMount: Equatable, Sendable {
     /// the person's keys and app data (`~/.ssh`, `~/Library`).
     static func isTooBroad(_ path: String, home: String = NSHomeDirectory()) -> Bool {
         let canonical = canonicalPath(home) ?? home
-        for candidate in [home, canonical] {
-            let slash = path.hasSuffix("/") ? path : path + "/"
-            if path == candidate || candidate.hasPrefix(slash) { return true }
+        let slash = path.hasSuffix("/") ? path : path + "/"
+        for candidate in [home, canonical] where path == candidate || candidate.hasPrefix(slash) {
+            return true
+        }
+        // The same folder under another name (the firmlink /System/Volumes/Data
+        // is not a symbolic link): compare what the paths are, not what they say.
+        guard let target = identity(of: path) else { return false }
+        var ancestor = canonical
+        while ancestor != "/", !ancestor.isEmpty {
+            if identity(of: ancestor) == target { return true }
+            ancestor = (ancestor as NSString).deletingLastPathComponent
         }
         return false
+    }
+
+    private static func identity(of path: String) -> [UInt64]? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return [UInt64(bitPattern: Int64(info.st_dev)), UInt64(info.st_ino)]
     }
 
     var targetPath: String { "\(Self.target)/\(id)" }

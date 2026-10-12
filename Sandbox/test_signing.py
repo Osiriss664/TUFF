@@ -1813,6 +1813,8 @@ class FilesProfileTests(FilesLiveServer):
         self.assertSigned(answer)
         data = answer.json
         self.assertIsNone(data["next_cursor"])
+        self.assertEqual(data["unreadable"], 0)
+        self.assertEqual(list(data), ["entries", "next_cursor", "unreadable"])
         self.assertEqual([(e["path"], e["size"]) for e in data["entries"]],
                          [("a.txt", 11), ("sub/b.md", 16)])
         self.assertEqual(set(data["entries"][0]), {"path", "size", "mtime"})
