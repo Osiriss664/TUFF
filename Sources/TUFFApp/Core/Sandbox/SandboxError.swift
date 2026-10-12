@@ -79,8 +79,8 @@ public enum SandboxError: Error, Equatable, Sendable, CustomStringConvertible {
             "A search folder's path has a comma or a line break in it, which the container tool cannot mount."
         case .folderAccessDenied:
             "macOS did not let the file sandbox read a search folder. In System Settings, open Privacy & "
-                + "Security, then Files and Folders (or Full Disk Access), allow \u{201C}container-runtime-linux\u{201D} "
-                + "for the folder, and try again."
+                + "Security, then Files and Folders (or, if it is not listed there, Full Disk Access), allow "
+                + "\u{201C}container-runtime-linux\u{201D} for the folder, and try again."
         }
     }
 }

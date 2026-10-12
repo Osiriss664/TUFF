@@ -556,6 +556,27 @@ extension SandboxStubTests {
             #expect(!SandboxFolderMount.isTooBroad("/Volumes/Data", home: "/Users/test"))
         }
 
+        @Test(.enabled(if: FileManager.default.fileExists(atPath: "/System/Volumes/Data")))
+        func theDataVolumeRootIsTooBroadUnderItsOtherName() {
+            // The firmlinked data volume holds /Users, so it holds the home
+            // folder, although the home folder's path does not run through it.
+            #expect(SandboxFolderMount.isTooBroad("/System/Volumes/Data", home: NSHomeDirectory()))
+        }
+
+        @Test func aFolderWithOnlyPackageContentsIsNotTakenForAnUnreadableOne() throws {
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tuff files package \(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let package = base.appendingPathComponent("Thing.app", isDirectory: true)
+            try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+            try "text".write(to: package.appendingPathComponent("inside.txt"), atomically: true, encoding: .utf8)
+            let isPackage = try package.resourceValues(forKeys: [.isPackageKey]).isPackage == true
+            try #require(isPackage, "this system does not treat .app as a package")
+            #expect(!SandboxFileReader.macSeesIndexableFiles(in: base.resolvingSymlinksInPath().path))
+            try "text".write(to: base.appendingPathComponent("plain.txt"), atomically: true, encoding: .utf8)
+            #expect(SandboxFileReader.macSeesIndexableFiles(in: base.resolvingSymlinksInPath().path))
+        }
+
         @Test func theFileLimitStopsTheScan() async throws {
             let h = try await FilesHarness.ready { _ in
                 listReply((1...10).map { ("f\($0).txt", 1, 1_700_000_000) }, next: "f10.txt")
@@ -842,6 +863,17 @@ private struct StubReader: AppLocalFileReading {
         #expect(status.indexedFiles == 2)
         let found = try await box.index.search("zeppelins", folders: [box.folder], limit: 5)
         #expect(found.count == 2)
+    }
+
+    @Test func stampsThatNeverMatchTheMacAreReportedNotSilent() async throws {
+        let box = try makeBox(["a.md", "b.md"])
+        defer { box.cleanUp() }
+        var stub = try reader(box, names: ["a.md", "b.md"]) { _ in [(nil, 1, 1, "text")] }
+        // The sandbox's clock is off by a few microseconds on every file.
+        for (name, stamp) in stub.files { stub.files[name] = (stamp.size, stamp.mtime + 0.01) }
+        let status = try await AppLocalIndexer(index: box.index, reader: stub).update(box.folder)
+        #expect(status.indexedFiles == 0)
+        #expect(status.lastError?.contains("modification times") == true)
     }
 
     @Test func aSkipIsRememberedAndTheOthersAreStillIndexed() async throws {

@@ -212,8 +212,9 @@ struct SandboxFileReader: AppLocalFileReading {
     static func macSeesIndexableFiles(in root: String) -> Bool {
         let manager = FileManager.default
         func indexable(_ url: URL) -> Bool {
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
-                  values.isSymbolicLink != true, values.isRegularFile == true else { return false }
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey]),
+                  values.isSymbolicLink != true, values.isHidden != true,
+                  values.isRegularFile == true else { return false }
             return DocumentTextExtractor.canExtract(from: url) && (!url.pathExtension.isEmpty
                 || url.lastPathComponent.lowercased().hasPrefix("readme"))
         }
@@ -222,8 +223,10 @@ struct SandboxFileReader: AppLocalFileReading {
             let url = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent(name)
             if indexable(url) { return true }
             guard !skippedDirectoryNames.contains(name),
-                  let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                  let values = try? url.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .isHiddenKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  values.isPackage != true, values.isHidden != true else { continue }
             let inner = ((try? manager.contentsOfDirectory(atPath: url.path)) ?? [])
                 .filter { !$0.hasPrefix(".") }
             if inner.prefix(50).contains(where: { indexable(url.appendingPathComponent($0)) }) { return true }
@@ -336,10 +339,10 @@ enum SandboxFilesFailure {
     static func map(_ error: Error) -> Error {
         if error is CancellationError { return error }
         if error is AppLocalSearchError || error is SandboxError { return error }
-        if case SandboxClientError.remote(_, "folder_unreadable", _) = error {
+        if case .remote(_, "folder_unreadable", _)? = error as? SandboxClientError {
             return AppLocalSearchError.index(SandboxError.folderAccessDenied.description)
         }
-        if case SandboxClientError.remote(_, "not_found", _) = error {
+        if case .remote(_, "not_found", _)? = error as? SandboxClientError {
             return AppLocalSearchError.index(
                 "The file sandbox does not have this folder. It may have been added after the sandbox "
                     + "started, or there are more than \(SandboxFolderMount.maximumCount) folders.")
@@ -363,7 +366,6 @@ enum SandboxFilesFailure {
 final class SandboxFilesService {
     let controller: SandboxController
     let access: SandboxWebAccess
-    private var mounted: [SandboxFolderMount] = []
 
     init(controller: SandboxController, access: SandboxWebAccess) {
         self.controller = controller
@@ -392,23 +394,22 @@ final class SandboxFilesService {
         let desired = Self.mounts(for: folders)
         if desired.isEmpty {
             await controller.stop()
-            mounted = []
             return
         }
-        if controller.state == .ready, mounted == desired, controller.activeMountIDs == desired.map(\.id) {
+        if controller.state == .ready, controller.folderMounts == desired,
+           controller.activeMountIDs == desired.map(\.id) {
             return
         }
         // An indexing run that was cancelled meanwhile (the person turned the
         // setting off, or changed the folders) must not bring the VM back.
         try Task.checkCancellation()
-        if controller.state.isBusy, mounted == desired {
+        if controller.state.isBusy, controller.folderMounts == desired {
             // A start for these folders is under way: wait for it.
             await controller.start()
         } else {
             await controller.stop()
             try Task.checkCancellation()
             controller.folderMounts = desired
-            mounted = desired
             await controller.start()
         }
         try Task.checkCancellation()
@@ -421,7 +422,6 @@ final class SandboxFilesService {
 
     func stop() async {
         await controller.stop()
-        mounted = []
     }
 }
 #endif

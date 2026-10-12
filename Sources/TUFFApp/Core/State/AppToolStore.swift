@@ -324,6 +324,18 @@ public final class AppToolStore {
         indexingFolderID = nil
     }
 
+    /// "Stop Indexing" from the settings: the run ends, and a start of the
+    /// files sandbox under way for it does not finish and leave the folders
+    /// mounted. (Not part of `stopIndexing`, which a new run calls first.)
+    public func cancelIndexing() {
+        stopIndexing()
+        #if os(macOS)
+        if indexInSandbox, let service = sandboxFiles, service.controller.state.isBusy {
+            Task { await service.stop() }
+        }
+        #endif
+    }
+
     public var isIndexing: Bool { indexingFolderID != nil }
 
     // MARK: Keys

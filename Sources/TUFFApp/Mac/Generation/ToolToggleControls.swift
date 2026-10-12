@@ -112,7 +112,7 @@ struct FolderAccessPanel: View {
                 Button("Add Folder…", action: addFolders)
                 Spacer()
                 if model.toolStore.isIndexing {
-                    Button("Stop Indexing") { model.toolStore.stopIndexing() }
+                    Button("Stop Indexing") { model.toolStore.cancelIndexing() }
                 } else if !model.toolStore.folders.isEmpty {
                     Button("Update Index") { model.toolStore.reindex() }
                 }

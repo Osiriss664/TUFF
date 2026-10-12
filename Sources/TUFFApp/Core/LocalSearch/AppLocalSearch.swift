@@ -440,6 +440,8 @@ public struct AppLocalIndexer: Sendable {
         status.pendingFiles = pending.count
         progress(status)
 
+        // Files whose stamp on the Mac disagreed with the one the reader gave.
+        var stampMismatches = 0
         for file in pending {
             try Task.checkCancellation()
             while shouldPause() {
@@ -451,6 +453,7 @@ public struct AppLocalIndexer: Sendable {
                 guard AppLocalSearchIndex.isInside(file.path, folder: folder),
                       let stamp = AppLocalSearchIndex.fileStamp(file.path),
                       stamp.size == file.size, abs(stamp.mtime - file.mtime) < 0.001 else {
+                    stampMismatches += 1
                     continue
                 }
                 if let reader {
@@ -484,6 +487,12 @@ public struct AppLocalIndexer: Sendable {
             status.indexedFiles += 1
             status.pendingFiles -= 1
             if status.pendingFiles % 20 == 0 { progress(status) }
+        }
+        // A reader whose modification times never match the Mac's (a file
+        // system that rounds them) would index nothing and say nothing.
+        if reader != nil, pending.count >= 2, stampMismatches == pending.count {
+            status.lastError = "The files' modification times as the sandbox reports them do not match the Mac's, "
+                + "so nothing could be indexed."
         }
         let counts = try await index.counts(folder: folder.id)
         status.indexedFiles = counts.indexed

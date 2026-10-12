@@ -3262,6 +3262,7 @@ public final class AppModel {
         set {
             guard settingsStore.runFilesInSandbox != newValue else { return }
             settingsStore.runFilesInSandbox = newValue
+            toolStore.stopIndexing()
             toolStore.indexInSandbox = newValue
             persistSettings()
             #if os(macOS)

@@ -76,11 +76,13 @@ second sandbox, a VM with **no network at all**, instead of by TUFF:
   text, removes control and invisible characters again, and keeps the index on
   your Mac as before. A harmful PDF or text file meets the VM's limits and not
   your Mac's files.
-- TUFF still decides what is indexed. Hidden files, build and dependency
-  folders, links, packages, deep folders and big files are skipped by TUFF's
-  own rules whatever the VM lists, and each file is looked at on the Mac again
-  before and after it is read; a file that changed meanwhile waits for the
-  next update.
+- TUFF still decides what is indexed, as far as paths go. Hidden files,
+  build and dependency folders, links, packages, deep folders and big files
+  are skipped by TUFF's own rules whatever the VM lists, and each file is
+  looked at on the Mac again before and after it is read; a file that
+  changed meanwhile waits for the next update. TUFF cannot check the *text*
+  the VM returns, though: a VM taken over by a harmful PDF could return other
+  files from the same folder as the text of a file TUFF accepted.
 - The VM runs while TUFF indexes. It starts when indexing starts, is started
   again with the new folders when you add or remove a folder, stops after 10
   minutes without use and when TUFF quits, and stops when you turn the switch

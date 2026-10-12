@@ -66,6 +66,10 @@ struct SandboxFolderMount: Equatable, Sendable {
         // The same folder under another name (the firmlink /System/Volumes/Data
         // is not a symbolic link): compare what the paths are, not what they say.
         guard let target = identity(of: path) else { return false }
+        // The root of the volume the home folder lives on (on a Mac the data
+        // volume at /System/Volumes/Data, which holds /Users): inode 2 on APFS
+        // and HFS+. It is no ancestor path of the home folder by name.
+        if target[1] == 2, let homeID = identity(of: canonical), homeID[0] == target[0] { return true }
         var ancestor = canonical
         while ancestor != "/", !ancestor.isEmpty {
             if identity(of: ancestor) == target { return true }
