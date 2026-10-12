@@ -737,10 +737,20 @@ class ErrorAnswerTests(LiveServer):
         self.assertError(answer, 411, "invalid_request")
 
     def test_a_content_length_that_is_not_a_number_is_400(self):
-        for value in ("abc", "-1", "+5", "1e3", "0x10", "1 2", "9" * 5000, ""):
+        for value in ("abc", "-1", "+5", "1e3", "0x10", "1 2", ""):
             with self.subTest(value=value):
                 answer = self.exchange("POST", "/v1/page", b"", length=value)
                 self.assertError(answer, 400, "invalid_request")
+
+    def test_a_content_length_with_very_many_digits_is_413_on_every_python(self):
+        for value in ("9" * 19, "9" * 5000, "0" * 5000 + "1" * 19):
+            with self.subTest(digits=len(value)):
+                answer = self.exchange("POST", "/v1/page", b"", length=value)
+                self.assertError(answer, 413, "invalid_request")
+
+    def test_leading_zeros_do_not_make_a_content_length_too_large(self):
+        answer = self.exchange("POST", "/v1/page", b"", length="0" * 30)
+        self.assertNotEqual(answer.status, 413)
 
     def test_chunked_transfer_encoding_is_400_for_post_and_get(self):
         answer = self.exchange("POST", "/v1/page", b"", length=None,

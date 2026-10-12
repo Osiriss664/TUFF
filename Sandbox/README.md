@@ -51,6 +51,11 @@ blocked Mac addresses and every endpoint, and stops it again. Set
 - `/v1/http` reaches `html.duckduckgo.com`, `api.search.brave.com` and
   `api.tavily.com` over https, with a short header allow-list; a key header goes
   to its own provider only.
+  The request is `{"url", "method": "GET" or "POST", "headers"?, "body_base64"?,
+  "max_bytes"?, "timeout_seconds"?}`; a POST body goes in `body_base64` (base64
+  of the bytes; the whole request, headers' values and URL included, may be at
+  most 64 KiB, which leaves a little under 48 KiB of decoded body), and a field named `body` is refused as
+  unknown. The answer is `{final_url, status, content_type, body_base64}`.
 - Both refuse private, local and metadata addresses, and the Mac's own
   addresses (`SANDBOX_BLOCKED_ADDRESSES`), in the server and again in the
   VM's firewall.
@@ -61,7 +66,9 @@ DNS goes through the Mac, so the Mac sees which names are looked up. Search
 keys pass through the VM inside the one request that needs them. The Mac's own
 addresses are blocked one by one: other machines on the Mac's network, and
 addresses the Mac gains after the VM started (for example temporary IPv6
-addresses), are not covered by that list; the VM's firewall refuses private
+addresses, or the address of the VM network's own bridge, which exists only while a
+container runs), are not covered by that list (the bridge's are private ranges,
+refused anyway); the VM's firewall refuses private
 ranges, but a LAN host with a global IPv6 address is reachable if the VM has
 IPv6 at all. The server serves 32 connections at once and cuts a request that
 has not arrived in full after 10 seconds, so a local program cannot exhaust its

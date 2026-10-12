@@ -1457,10 +1457,15 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 raise ToolError("Content-Length is required", "invalid_request", 411)
             return b""
-        try:
-            length = int(raw) if raw.strip().isascii() and raw.strip().isdigit() else -1
-        except ValueError:
+        digits = raw.strip()
+        if not (digits.isascii() and digits.isdigit()):
             length = -1
+        elif len(digits.lstrip("0")) > 18:
+            # Far above any limit; not parsed, so Python versions that cap the
+            # size of int("9" * 5000) answer the same.
+            length = MAX_REQUEST_BYTES + 1
+        else:
+            length = int(digits)
         if length < 0:
             raise ToolError("Content-Length is not a number", "invalid_request", 400)
         if length > MAX_REQUEST_BYTES:

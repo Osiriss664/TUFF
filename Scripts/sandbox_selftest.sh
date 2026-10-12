@@ -31,6 +31,7 @@ client="$context/sandbox_client.py"
 state="${TMPDIR:-/tmp}/tuff-sandbox-selftest"
 secret_folder="$state/secret"
 secret_file="$secret_folder/secret"
+given_file="$state/blocked-addresses"
 # A public address the self-test adds to the blocklist (see `start`).
 test_address="198.41.0.4"
 
@@ -72,7 +73,12 @@ json_field() { # FIELD: reads the printed answer (status line, then JSON body) o
   python3 -I -c '
 import json, sys
 lines = sys.stdin.read().split("\n", 1)
-body = json.loads(lines[1]) if len(lines) > 1 and lines[1].strip() else {}
+try:
+    body = json.loads(lines[1]) if len(lines) > 1 and lines[1].strip() else {}
+except ValueError:  # not JSON: something other than the sandbox answered
+    body = {}
+if not isinstance(body, dict):
+    body = {}
 field = sys.argv[1]
 print(body.get("error", {}).get("code", "") if field == "error" else body.get(field, ""))
 ' "$1"
@@ -107,6 +113,9 @@ case "${1:-}" in
     # public address (a.root-servers.net, nothing TUFF talks to) is added here
     # only for the self-test, so the check can tell the list from the rest.
     blocked="$blocked,$test_address"
+    # What the VM is given, kept for the self-test: the Mac gains addresses
+    # after this point (the vmnet bridge exists only while a container runs).
+    printf '%s\n' "$blocked" | tr ',' '\n' >"$given_file"
     # The entrypoint starts as root with these four capabilities only, to load
     # the firewall; the server then reads the secret, gives them all up and runs
     # as user 10001.
@@ -156,15 +165,37 @@ case "${1:-}" in
     # (macOS ships bash 3.2, which has no mapfile.)
     mac=()
     while IFS= read -r line; do [[ -n "$line" ]] && mac+=("$line"); done < <(mac_addresses)
+    # The addresses the VM was started with. The Mac's list now can hold more
+    # (the vmnet bridge exists only while the VM runs); those are private or
+    # link-local, refused by the private-range rules, and tested below as URLs.
+    given=()
+    if [[ -f "$given_file" ]]; then
+      while IFS= read -r line; do [[ -n "$line" ]] && given+=("$line"); done <"$given_file"
+    else
+      given=("${mac[@]}" "$test_address")
+    fi
+    late=""
+    for address in "${mac[@]}"; do
+      printf '%s\n' "${given[@]}" | grep -qFx -- "$address" || late+=" $address"
+    done
 
     echo "Health:"
     health="$(call GET /health)" || fail "/health is not signed correctly"
     [[ "$health" == *'"profile": "web"'* ]] && pass "/health answers, signed" || fail "/health: $health"
-    count="$(printf '%s' "$health" | tail -n +2 | json_field blocked_addresses)"
-    expected="$(printf '%s\n%s\n' "$(printf '%s\n' "${mac[@]}")" "$test_address" | sort -u | grep -c .)"
+    count="$(printf '%s' "$health" | json_field blocked_addresses)"
+    expected="$(printf '%s\n' "${given[@]}" | python3 -I -c '
+import ipaddress, sys
+found = set()
+for line in sys.stdin:
+    if line.strip():
+        ip = ipaddress.ip_address(line.strip())
+        found.add(ip.ipv4_mapped if getattr(ip, "ipv4_mapped", None) else ip)
+print(len(found))
+')"
     [[ "$count" == "$expected" ]] \
       && pass "the sandbox blocks all $count addresses it was given (the Mac's and one test address)" \
       || fail "the sandbox reports $count blocked addresses, $expected were given"
+    [[ -z "$late" ]] || echo "  note  addresses the Mac gained after the start (not on the blocklist, the bridge ones are private ranges, tested as URLs below):$late"
 
     echo "Page requests the sandbox must refuse:"
     blocked_urls=(
@@ -179,13 +210,13 @@ case "${1:-}" in
     done
     # Public, so only the blocklist can be why it is refused.
     reply="$(call POST /v1/page "{\"url\": \"http://$test_address/\", \"timeout_seconds\": 20}" || true)"
-    code="$(printf '%s' "$reply" | tail -n +2 | json_field error)"
+    code="$(printf '%s' "$reply" | json_field error)"
     [[ "$code" == private_address ]] \
       && pass "the public test address $test_address on the blocklist is refused by the server" \
       || fail "the blocklisted public address $test_address was not refused by the server: ${reply:0:200}"
     for url in "${blocked_urls[@]}"; do
       reply="$(call POST /v1/page "{\"url\": \"$url\", \"timeout_seconds\": 20}" || true)"
-      code="$(printf '%s' "$reply" | tail -n +2 | json_field error)"
+      code="$(printf '%s' "$reply" | json_field error)"
       case "$code" in
         private_address|blocked_port|invalid_url|unsupported_scheme|dns_error) pass "$url refused ($code)" ;;
         *) fail "$url was not refused: ${reply:0:200}" ;;
@@ -196,7 +227,7 @@ case "${1:-}" in
     refuse_http() { # LABEL EXPECTED_CODE JSON
       local reply code
       reply="$(call POST /v1/http "$3" || true)"
-      code="$(printf '%s' "$reply" | tail -n +2 | json_field error)"
+      code="$(printf '%s' "$reply" | json_field error)"
       [[ "$code" == "$2" ]] && pass "$1 refused ($code)" || fail "$1 was not refused ($2 expected): ${reply:0:200}"
     }
     refuse_http "a site that is not a search provider" forbidden_origin \
@@ -228,7 +259,7 @@ case "${1:-}" in
     # firewall-web.nft), which the output chain rejects.
     sets="$(in_vm nft -nn list sets 2>/dev/null || true)"
     missing=""
-    for address in "${mac[@]}" "$test_address"; do
+    for address in "${given[@]}"; do
       # Whole elements only: "10.0.0.1" must not match "10.0.0.12".
       tr -c '0-9a-fA-F:.' '\n' <<<"$sets" | grep -qFx -- "$address" || missing+=" $address"
     done
@@ -353,14 +384,14 @@ PY
     reply="$(call POST /v1/page '{"url": "https://example.com/"}' || true)"
     # The words are in the page body, not in its title: the title is read in
     # the server process, the body by the extraction child.
-    body_text="$(printf '%s' "$reply" | tail -n +2 | json_field text)"
+    body_text="$(printf '%s' "$reply" | json_field text)"
     if [[ "$body_text" == *"xample"* ]]; then
       pass "https://example.com/ read as text"
     else
       fail "https://example.com/ was not read as text (the extraction may not run); check the VM's internet access: ${reply:0:200}"
     fi
     reply="$(call POST /v1/page '{"url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"}' || true)"
-    body_text="$(printf '%s' "$reply" | tail -n +2 | json_field text)"
+    body_text="$(printf '%s' "$reply" | json_field text)"
     if [[ "$reply" == *"application/pdf"* && -n "$body_text" ]]; then
       pass "a PDF read as text inside the VM"
     else
