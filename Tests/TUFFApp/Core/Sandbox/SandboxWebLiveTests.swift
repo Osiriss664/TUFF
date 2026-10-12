@@ -43,7 +43,8 @@ import Testing
         // An HTML page.
         let page = try await timed("html page") { try await reader.read(URL(string: "https://example.org/")!) }
         print("WEB LIVE: html title \(page.title ?? "-"), \(page.text.count) characters")
-        #expect(page.text.contains("Example Domain"))
+        // The extractor moves the page's heading into the title.
+        #expect(((page.title ?? "") + " " + page.text).contains("Example Domain"))
 
         // A PDF, read inside the sandbox.
         let pdf = try await timed("pdf") {
