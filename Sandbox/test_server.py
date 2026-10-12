@@ -10,6 +10,7 @@ trafilatura or pypdf skip without them."""
 
 import base64
 import errno
+import gc
 import gzip
 import io
 import ipaddress
@@ -3447,12 +3448,18 @@ class FilesListTests(FilesTestCase):
 
     def test_the_listing_does_not_leak_descriptors(self):
         self.make_tree()
+        self.paths()  # warm up: lazily opened descriptors (imports, caches) are not leaks
+        gc.collect()
         before = open_descriptors()
         for _ in range(5):
             self.paths(limit=3)
             self.paths()
             self.paths(cursor="a/b/c.txt", limit=1)
-        self.assertEqual(open_descriptors(), before)
+        gc.collect()
+        # A leak would add at least one descriptor per listing (15 here); a
+        # slack of 2 absorbs what the platform's own descriptor listing and
+        # garbage collection do (macOS with Python 3.9 was off by one once).
+        self.assertLessEqual(open_descriptors(), before + 2)
 
     # -- arguments --------------------------------------------------------
 
