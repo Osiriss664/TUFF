@@ -68,7 +68,9 @@ private func mount(_ id: String = folderOne, _ path: String = "/Users/test/Notes
 
     @Test func folderIDsAreLowercaseUUIDs() {
         #expect(SandboxFolderMount.isFolderID(folderOne))
-        #expect(!SandboxFolderMount.isFolderID(folderOne.uppercased()))
+        // Uppercasing changes only letters, which folderOne does not have.
+        #expect(SandboxFolderMount.isFolderID("abcdef01-2222-3333-4444-555555555555"))
+        #expect(!SandboxFolderMount.isFolderID("ABCDEF01-2222-3333-4444-555555555555"))
         #expect(!SandboxFolderMount.isFolderID("../etc"))
         #expect(!SandboxFolderMount.isFolderID(folderOne + "x"))
     }

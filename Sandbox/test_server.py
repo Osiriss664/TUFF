@@ -21,6 +21,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -3010,21 +3011,74 @@ def good_pages_reader(data):
     return {"pages": 3, "pages_read": 3, "pages_failed": 1, "texts": [[1, "a"], [3, "b"]]}
 
 
+def open_descriptors() -> int:
+    """How many file descriptors this process has open, or skip the test."""
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            return len(os.listdir(directory))
+        except OSError:
+            continue
+    raise unittest.SkipTest("this system cannot list the open file descriptors")
+
+
 class FilesTestCase(unittest.TestCase):
     """A temporary /files with one folder (FOLDER) in it."""
 
     def setUp(self):
-        self.base = self.enterContext(__import__("tempfile").TemporaryDirectory())
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)  # (TestCase.enterContext needs Python 3.11)
+        self.base = directory.name
         self.root = os.path.join(self.base, FOLDER)
         os.mkdir(self.root)
         self.tools = server.FilesTools(root=self.base)
+        # APFS and other case-insensitive file systems cannot hold "a" and "A".
+        probe = os.path.join(self.base, "case-probe")
+        open(probe, "w").close()
+        self.case_insensitive = os.path.exists(os.path.join(self.base, "CASE-PROBE"))
+        os.unlink(probe)
 
     def write(self, relative, content=b"text", folder=None):
         path = os.path.join(folder or self.root, relative)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as handle:
-            handle.write(content.encode() if isinstance(content, str) else content)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(content.encode() if isinstance(content, str) else content)
+        except OSError as error:
+            if error.errno == errno.ENAMETOOLONG:  # macOS: 255 bytes a name, 1024 a path
+                self.skipTest("this file system refuses names or paths this long")
+            raise
         return path
+
+    def write_raw_name(self, name: bytes, content=b"x"):
+        """A file in the folder whose name is not UTF-8, or skip: APFS refuses it."""
+        try:
+            with open(os.path.join(os.fsencode(self.root), name), "wb") as handle:
+                handle.write(content)
+        except OSError as error:
+            if error.errno in (errno.EILSEQ, errno.EINVAL):
+                self.skipTest("this file system refuses file names that are not UTF-8")
+            raise
+
+    def failing_listdir(self, *directories, error=None):
+        """os.listdir that fails for these directories (paths below the folder,
+        "" for the folder itself), found by their device and inode so that no
+        /proc is needed. The mode of a directory means nothing to root, so
+        the failure is made."""
+        found = set()
+        for relative in directories:
+            info = os.stat(os.path.join(self.root, relative) if relative else self.root)
+            found.add((info.st_dev, info.st_ino))
+        real = os.listdir
+        error = error or PermissionError(errno.EACCES, "denied")
+
+        def listdir(target):
+            if isinstance(target, int):
+                info = os.fstat(target)
+                if (info.st_dev, info.st_ino) in found:
+                    raise error
+            return real(target)
+
+        return mock.patch.object(server.os, "listdir", listdir)
 
     def listing(self, **arguments):
         return self.tools.list_files(FOLDER, **arguments)
@@ -3226,8 +3280,11 @@ class FilesListTests(FilesTestCase):
             self.write(f"sub/{name}/inside.txt")
         self.write("kept/inside.txt")
         self.write("builder/inside.txt")
-        self.write("Build/inside.txt")  # the names are case sensitive, as in the app
-        self.assertEqual(self.paths(), ["Build/inside.txt", "builder/inside.txt", "kept/inside.txt"])
+        expected = ["builder/inside.txt", "kept/inside.txt"]
+        if not self.case_insensitive:  # "Build" and "build" are one name on APFS
+            self.write("Build/inside.txt")  # the names are case sensitive, as in the app
+            expected.insert(0, "Build/inside.txt")
+        self.assertEqual(self.paths(), expected)
 
     def test_a_file_named_like_a_skipped_directory_is_listed(self):
         self.write("build.txt")
@@ -3235,12 +3292,16 @@ class FilesListTests(FilesTestCase):
         self.assertEqual(self.paths(), ["build.txt"])
 
     def test_files_without_an_extension_are_listed_only_when_named_readme(self):
-        for name in ("Makefile", "LICENSE", "README", "readme", "Readme.first", "README.md",
-                     "notes.", "ReadMeNot", "a/readme", "a/other"):
+        names = ["Makefile", "LICENSE", "README", "Readme.first", "README.md",
+                 "notes.", "ReadMeNot", "a/readme", "a/other"]
+        expected = ["README", "README.md", "ReadMeNot", "Readme.first", "a/readme", "data.txt"]
+        if not self.case_insensitive:  # "readme" and "README" are one name on APFS
+            names.append("readme")
+            expected.append("readme")
+        for name in names:
             self.write(name)
         self.write("data.txt")
-        self.assertEqual(self.paths(), ["README", "README.md", "ReadMeNot", "Readme.first", "a/readme",
-                                        "data.txt", "readme"])
+        self.assertEqual(self.paths(), expected)
 
     def test_the_depth_limit(self):
         parts = [f"d{i}" for i in range(1, 25)]  # d1 ... d24
@@ -3275,21 +3336,12 @@ class FilesListTests(FilesTestCase):
     def test_a_directory_that_cannot_be_read_is_skipped(self):
         self.write("a/x.txt")
         self.write("b/y.txt")
-        real = os.listdir
-
-        def listdir(target):
-            if isinstance(target, int) and os.readlink(f"/proc/self/fd/{target}").endswith("/a"):
-                raise PermissionError(13, "denied")
-            return real(target)
-
-        with mock.patch.object(server.os, "listdir", listdir):
+        with self.failing_listdir("a"):
             self.assertEqual(self.paths(), ["b/y.txt"])
 
     def test_names_that_are_not_valid_utf8_or_hold_control_characters_are_not_listed(self):
         self.write("fine.txt")
-        raw = os.path.join(os.fsencode(self.root), b"bad-\xff.txt")
-        with open(raw, "wb") as handle:
-            handle.write(b"x")
+        self.write_raw_name(b"bad-\xff.txt")
         try:
             self.write("line\nbreak.txt")
         except OSError:
@@ -3395,12 +3447,12 @@ class FilesListTests(FilesTestCase):
 
     def test_the_listing_does_not_leak_descriptors(self):
         self.make_tree()
-        before = len(os.listdir("/proc/self/fd"))
+        before = open_descriptors()
         for _ in range(5):
             self.paths(limit=3)
             self.paths()
             self.paths(cursor="a/b/c.txt", limit=1)
-        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertEqual(open_descriptors(), before)
 
     # -- arguments --------------------------------------------------------
 
@@ -3451,7 +3503,8 @@ class FilesListTests(FilesTestCase):
     def test_folders_lists_the_ids_found_sorted(self):
         os.mkdir(os.path.join(self.base, OTHER_FOLDER))
         os.mkdir(os.path.join(self.base, "not-an-id"))
-        os.mkdir(os.path.join(self.base, FOLDER.upper()))
+        if not self.case_insensitive:  # on APFS this is the folder itself
+            os.mkdir(os.path.join(self.base, FOLDER.upper()))
         with open(os.path.join(self.base, "11111111-1111-4111-8111-111111111111"), "w") as handle:
             handle.write("a file")
         self.assertEqual(self.tools.folders(), sorted([FOLDER, OTHER_FOLDER]))
@@ -3573,10 +3626,10 @@ class FilesTextTests(FilesTestCase):
                 raise OSError(errno.EIO, "input/output error")
             return real(descriptor)
 
-        before = len(os.listdir("/proc/self/fd"))
+        before = open_descriptors()
         with mock.patch.object(server.os, "fstat", fstat):
             self.assertRefused(422, "unreadable", self.tools.passages, FOLDER, "io.txt")
-        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertEqual(open_descriptors(), before)
 
     def test_the_two_mebibyte_boundary(self):
         limit = 2 * 1024 * 1024
@@ -3653,13 +3706,13 @@ class FilesTextTests(FilesTestCase):
     def test_descriptors_are_closed(self):
         self.write("a.txt", "text")
         self.write("bad.txt", b"\xff")
-        before = len(os.listdir("/proc/self/fd"))
+        before = open_descriptors()
         for _ in range(5):
             self.passages("a.txt")
             for name in ("bad.txt", "missing.txt", ".", "a.txt/x"):
                 with self.assertRaises(ToolError):
                     self.tools.passages(FOLDER, name)
-        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertEqual(open_descriptors(), before)
 
     def test_error_messages_do_not_contain_the_contents(self):
         self.write("secret.txt", b"password=hunter2\xff")
@@ -3881,8 +3934,7 @@ class FilesListBudgetTests(FilesTestCase):
 
     def test_an_unexamined_name_that_is_not_utf8_does_not_end_a_page_with_a_bad_cursor(self):
         self.write("a.txt")
-        with open(os.path.join(os.fsencode(self.root), b"b-\xff.txt"), "wb") as handle:
-            handle.write(b"x")
+        self.write_raw_name(b"b-\xff.txt")
         self.write("c.txt")
         with mock.patch.object(server, "LIST_MAX_EXAMINED", 1):
             found = [e["path"] for page in self.chain() for e in page["entries"]]
@@ -3942,25 +3994,10 @@ class FilesListBudgetTests(FilesTestCase):
 class FilesUnreadableTests(FilesTestCase):
     """What could not be read is said, not hidden."""
 
-    def failing_listdir(self, *endings, error=None):
-        """os.listdir that fails for the directories whose path ends so (the
-        mode of a directory means nothing to root, so the failure is made)."""
-        real = os.listdir
-        error = error or PermissionError(errno.EACCES, "denied")
-
-        def listdir(target):
-            if isinstance(target, int):
-                path = os.readlink(f"/proc/self/fd/{target}")
-                if any(path.endswith(ending) for ending in endings):
-                    raise error
-            return real(target)
-
-        return mock.patch.object(server.os, "listdir", listdir)
-
     def test_directories_that_cannot_be_listed_are_counted_once_each(self):
         for name in ("a/x.txt", "b/y.txt", "c/z.txt", "c/sub/w.txt"):
             self.write(name)
-        with self.failing_listdir("/a", "/c"):
+        with self.failing_listdir("a", "c"):
             page = self.listing()
         self.assertEqual([e["path"] for e in page["entries"]], ["b/y.txt"])
         self.assertEqual(page["unreadable"], 2)
@@ -3969,7 +4006,7 @@ class FilesUnreadableTests(FilesTestCase):
     def test_another_error_counts_as_well(self):
         self.write("a/x.txt")
         self.write("b/y.txt")
-        with self.failing_listdir("/a", error=OSError(errno.EIO, "input/output error")):
+        with self.failing_listdir("a", error=OSError(errno.EIO, "input/output error")):
             page = self.listing()
         self.assertEqual((page["unreadable"], [e["path"] for e in page["entries"]]), (1, ["b/y.txt"]))
 
@@ -3994,7 +4031,7 @@ class FilesUnreadableTests(FilesTestCase):
     def test_the_pages_counts_add_up_to_the_total_without_counting_a_directory_twice(self):
         for name in ("a/x.txt", "b/y.txt", "c/z.txt", "d/w.txt"):
             self.write(name)
-        with self.failing_listdir("/a", "/c"):
+        with self.failing_listdir("a", "c"):
             first = self.listing(limit=1)
             second = self.listing(cursor=first["next_cursor"], limit=1)
         # The first page walked a (unreadable) and b, then looked ahead into c and d.
@@ -4005,10 +4042,10 @@ class FilesUnreadableTests(FilesTestCase):
 
     def test_a_folder_whose_top_level_cannot_be_listed_is_403(self):
         self.write("a/x.txt")
-        with self.failing_listdir("/" + FOLDER):
+        with self.failing_listdir(""):
             error = self.assertRefused(403, "folder_unreadable", self.tools.list_files, FOLDER)
         self.assertEqual(error.message, "the folder cannot be read")
-        with self.failing_listdir("/" + FOLDER, error=PermissionError(errno.EPERM, "not permitted")):
+        with self.failing_listdir("", error=PermissionError(errno.EPERM, "not permitted")):
             self.assertRefused(403, "folder_unreadable", self.tools.list_files, FOLDER)
 
     def test_a_folder_that_cannot_be_opened_is_403_and_a_missing_one_is_404(self):
@@ -4026,7 +4063,7 @@ class FilesUnreadableTests(FilesTestCase):
 
     def test_another_error_listing_the_top_level_is_counted_not_403(self):
         self.write("a.txt")
-        with self.failing_listdir("/" + FOLDER, error=OSError(errno.EIO, "input/output error")):
+        with self.failing_listdir("", error=OSError(errno.EIO, "input/output error")):
             page = self.listing()
         self.assertEqual((page["entries"], page["unreadable"]), ([], 1))
 
@@ -4045,10 +4082,10 @@ class FilesOpenTests(FilesTestCase):
                 os.rename(replacement, path)
             return real(name, flags, *arguments, **keywords)
 
-        before = len(os.listdir("/proc/self/fd"))
+        before = open_descriptors()
         with mock.patch.object(server.os, "open", opening):
             self.assertRefused(409, "changed_while_reading", self.tools.passages, FOLDER, "swap.txt")
-        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertEqual(open_descriptors(), before)
 
     def test_a_directory_swapped_for_a_link_on_the_way_is_refused(self):
         self.write("d/file.txt", "inside")
@@ -4300,6 +4337,7 @@ class FilesPdfChildTests(unittest.TestCase):
         self.assertEqual(server.read_pdf_pages_bounded(b"x", timeout=10, reader=good_pages_reader), {
             "pages": 3, "pages_read": 3, "pages_failed": 1, "texts": [(1, "a"), (3, "b")]})
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "macOS cannot set RLIMIT_AS")
     def test_the_child_has_the_memory_limit(self):
         message = server._child_message(server._pdf_in_child, (address_space_pdf_reader, b"x"), 10, 10_000)
         self.assertIn(str(server.PDF_MEMORY_LIMIT).encode(), message)
