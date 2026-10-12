@@ -171,6 +171,9 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     /// person turns them on; they stay as last set.
     var webSearchEnabled: Bool = false
     var pauseWebSearchWhenOffline: Bool = false
+    /// Web searches and page reads go through the sandbox. Off until the
+    /// person turns it on; files written before it existed load as off.
+    var runWebInSandbox: Bool = false
     var fileSearchEnabled: Bool = false
     var searchProvider: AppSearchProviderKind = .duckDuckGo
 
@@ -230,6 +233,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case zoomLevel
         case webSearchEnabled
         case pauseWebSearchWhenOffline
+        case runWebInSandbox
         case fileSearchEnabled
         case searchProvider
     }
@@ -326,6 +330,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
                 AppZoomLevel.self, forKey: .zoomLevel) ?? .default
             pauseWebSearchWhenOffline = try container.decodeIfPresent(
                 Bool.self, forKey: .pauseWebSearchWhenOffline) ?? false
+            runWebInSandbox = try container.decodeIfPresent(
+                Bool.self, forKey: .runWebInSandbox) ?? false
             webSearchEnabled = try container.decodeIfPresent(
                 Bool.self, forKey: .webSearchEnabled) ?? false
             fileSearchEnabled = try container.decodeIfPresent(

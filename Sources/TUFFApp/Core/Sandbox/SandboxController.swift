@@ -35,7 +35,7 @@ struct SandboxDependencies: Sendable {
         SandboxDependencies(
             tool: ContainerTool(requiredTeamIdentifier: ContainerTool.appleTeamIdentifier),
             probe: SandboxHealthProbe(),
-            pin: .release,
+            pin: SandboxImagePin.fromEnvironment() ?? .release,
             stateDirectory: SandboxLocations.defaultStateDirectory(),
             addresses: { HostAddresses.current() },
             freePort: { try LoopbackPort.findFree() },
@@ -85,8 +85,10 @@ struct SandboxLaunch: Equatable, Sendable {
 /// Starts, checks and stops the web sandbox, a small Linux VM made by Apple's
 /// `container` tool that fetches web pages and search results for TUFF.
 ///
-/// Nothing calls this yet: the setting that turns it on arrives with the
-/// change that sends web requests through it. It never switches itself on.
+/// The app owns one (`AppModel.sandbox`). It is started when the person turns
+/// on "Run web search and page reads in a sandbox", at app launch if that is
+/// on, and before an answer that uses the web if it is on and the sandbox is
+/// not running. It never switches itself on.
 ///
 /// A start does these steps in order, and stops at the first that fails
 /// (there is no fallback and nothing is left running):
@@ -464,9 +466,23 @@ public final class SandboxController {
     /// throws.
     public func confirmRunning() async throws {
         guard state == .ready else { throw SandboxError.notReady }
-        let mine = generation
-        let port = activePort
-        let key = activeKey
+        try await probeRunning(port: activePort, key: activeKey, generation: generation)
+    }
+
+    /// The same check for the sandbox a lease belongs to: it throws
+    /// `notReady` if that sandbox has been stopped since, and asks the
+    /// lease's own port with the lease's own key.
+    public func confirmRunning(_ lease: SandboxLease) async throws {
+        guard isCurrent(lease) else { throw SandboxError.notReady }
+        try await probeRunning(port: lease.port, key: lease.key, generation: lease.generation)
+    }
+
+    /// Whether the lease belongs to the sandbox that is ready right now.
+    public func isCurrent(_ lease: SandboxLease) -> Bool {
+        state == .ready && lease.generation == generation
+    }
+
+    private func probeRunning(port: Int, key: Data, generation mine: Int) async throws {
         do {
             do {
                 _ = try await dependencies.probe.health(port: port, key: key)
