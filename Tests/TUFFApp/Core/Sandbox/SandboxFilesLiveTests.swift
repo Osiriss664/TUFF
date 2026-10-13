@@ -74,7 +74,7 @@ import Testing
 
         // Start with the folder mounted read-only; the app's own checks of
         // the firewall, the mounts and the privileges run inside `start`.
-        try await timed("start with one folder") { try await service.ensureRunning(for: [folder]) }
+        _ = try await timed("start with one folder") { try await service.ensureRunning(for: [folder]) }
         print("FILES LIVE: state \(controller.state), mounts \(controller.activeMountIDs)")
         #expect(controller.state == .ready)
         #expect(controller.activeMountIDs == [folder.id.uuidString.lowercased()])
@@ -123,7 +123,7 @@ import Testing
         try manager.createDirectory(at: second, withIntermediateDirectories: true)
         try "A pangolin walks here.".write(to: second.appendingPathComponent("p.txt"), atomically: true, encoding: .utf8)
         let other = AppSearchFolder(path: second.path)
-        try await timed("restart with two folders") { try await service.ensureRunning(for: [folder, other]) }
+        _ = try await timed("restart with two folders") { try await service.ensureRunning(for: [folder, other]) }
         #expect(controller.activeMountIDs.count == 2)
         let secondStatus = try await indexer.update(other)
         #expect(secondStatus.indexedFiles == 1, "indexed \(secondStatus.indexedFiles)")
