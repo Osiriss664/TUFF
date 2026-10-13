@@ -289,6 +289,14 @@ class AddressPolicyTests(unittest.TestCase):
                         "::ffff:192.168.64.1", "0.0.0.0", "224.0.0.1", "not-an-ip", ""]:
             self.assertFalse(server.is_public_address(address), address)
 
+    def test_the_ranges_of_addresses_a_mac_gains_after_the_start_are_refused(self):
+        # The block list holds the Mac's addresses at the start; the bridge's
+        # link-local and unique-local addresses can appear later (fdcc:: was
+        # seen on a Mac), so the private ranges themselves must refuse them.
+        for address in ["fc00::1", "fdcc::1", "fdcc:1234:5678::a", "fe80::1", "fe80::a1b2:c3ff:fed4:e5f6",
+                        "febf::1", "192.168.64.1", "169.254.1.1"]:
+            self.assertFalse(server.is_public_address(address), address)
+
     def test_public_addresses_are_allowed(self):
         for address in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946",
                         "2001:4860:4860::8888", "::ffff:8.8.8.8"]:
@@ -3456,7 +3464,7 @@ class FilesListTests(FilesTestCase):
             self.paths()
             self.paths(cursor="a/b/c.txt", limit=1)
         gc.collect()
-        # A leak would add at least one descriptor per listing (15 here); a
+        # A leak would add at least one descriptor per call shape and round (5); a
         # slack of 2 absorbs what the platform's own descriptor listing and
         # garbage collection do (macOS with Python 3.9 was off by one once).
         self.assertLessEqual(open_descriptors(), before + 2)
