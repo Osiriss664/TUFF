@@ -353,6 +353,25 @@ enum SandboxFilesFailure {
         return AppLocalSearchError.index(sentence(SandboxText.oneLine(error.localizedDescription)))
     }
 
+    /// The sentence for folders macOS did not let the sandbox read. `certain`
+    /// is false when the culprit among several folders is not known: then the
+    /// folders in places macOS protects (Documents, Desktop, Downloads,
+    /// iCloud Drive, other volumes) are named if there are any.
+    static func blocked(_ mounts: [SandboxFolderMount], certain: Bool) -> String {
+        func name(_ mount: SandboxFolderMount) -> String {
+            "\u{201C}" + SandboxText.oneLine((mount.path as NSString).lastPathComponent, limit: 60) + "\u{201D}"
+        }
+        let protectedPlaces = ["/Documents", "/Desktop", "/Downloads", "/Library/Mobile Documents", "/Volumes/"]
+        let likely = mounts.filter { mount in protectedPlaces.contains { mount.path.contains($0) } }
+        let named = certain ? mounts : (likely.isEmpty ? mounts : likely)
+        let list = named.prefix(5).map(name).joined(separator: ", ")
+            + (named.count > 5 ? " and \(named.count - 5) more" : "")
+        let subject = certain ? list : "one of these folders: \(list)"
+        return "macOS did not let the file sandbox read \(subject). In System Settings, open Privacy & "
+            + "Security, then Files and Folders (or, if it is not listed there, Full Disk Access), allow "
+            + "\u{201C}container-runtime-linux\u{201D} for the folder, then update the folders again."
+    }
+
     private static func sentence(_ text: String) -> String {
         guard let last = text.last, !".!?".contains(last) else { return text }
         return text + "."
@@ -366,6 +385,8 @@ enum SandboxFilesFailure {
 final class SandboxFilesService {
     let controller: SandboxController
     let access: SandboxWebAccess
+    /// The most folders started one by one to find the one macOS refuses.
+    static let maximumProbes = 8
 
     init(controller: SandboxController, access: SandboxWebAccess) {
         self.controller = controller
@@ -390,32 +411,83 @@ final class SandboxFilesService {
     /// done when it already does, otherwise it is stopped and started again.
     /// Throws what the person should read when it cannot be. With no folder
     /// that can be mounted it only makes sure no sandbox runs.
-    func ensureRunning(for folders: [AppSearchFolder]) async throws {
+    ///
+    /// When macOS refuses the sandbox one folder (a folder in Documents or
+    /// Desktop whose permission is off), the folders are started one by one
+    /// to find it, the sandbox runs with the others, and the answer names the
+    /// folders left out (lowercase folder id to the sentence for the person).
+    /// If no folder can be mounted, or there are too many to try one by one,
+    /// it throws.
+    @discardableResult
+    func ensureRunning(for folders: [AppSearchFolder]) async throws -> [String: String] {
         let desired = Self.mounts(for: folders)
         if desired.isEmpty {
             await controller.stop()
-            return
+            return [:]
         }
-        if controller.state == .ready, controller.folderMounts == desired,
-           controller.activeMountIDs == desired.map(\.id) {
+        // Every call tries all the folders again, so a folder the person has
+        // allowed since is read from then on. (When the sandbox already runs
+        // with exactly these folders, that costs nothing.)
+        do {
+            try await run(desired)
+            return [:]
+        } catch SandboxError.folderAccessDenied {
+            guard desired.count > 1 else { throw blockedError(desired, certain: true) }
+            guard desired.count <= Self.maximumProbes else {
+                throw blockedError(desired, certain: false)
+            }
+        }
+        // Which folder is it? Start with each one alone.
+        var good: [SandboxFolderMount] = []
+        var bad: [SandboxFolderMount] = []
+        for mount in desired {
+            try Task.checkCancellation()
+            do {
+                try await run([mount])
+                good.append(mount)
+            } catch SandboxError.folderAccessDenied {
+                bad.append(mount)
+            }
+        }
+        guard !good.isEmpty else {
+            await controller.stop()
+            throw blockedError(bad, certain: true)
+        }
+        try await run(good)
+        var blocked: [String: String] = [:]
+        for mount in bad { blocked[mount.id] = SandboxFilesFailure.blocked([mount], certain: true) }
+        return blocked
+    }
+
+    private func blockedError(_ mounts: [SandboxFolderMount], certain: Bool) -> Error {
+        AppLocalSearchError.index(SandboxFilesFailure.blocked(mounts, certain: certain))
+    }
+
+    /// Starts the sandbox with exactly `mounts` (or waits for such a start).
+    private func run(_ mounts: [SandboxFolderMount]) async throws {
+        if controller.state == .ready, controller.folderMounts == mounts,
+           controller.activeMountIDs == mounts.map(\.id) {
             return
         }
         // An indexing run that was cancelled meanwhile (the person turned the
         // setting off, or changed the folders) must not bring the VM back.
         try Task.checkCancellation()
-        if controller.state.isBusy, controller.folderMounts == desired {
+        if controller.state.isBusy, controller.folderMounts == mounts {
             // A start for these folders is under way: wait for it.
             await controller.start()
         } else {
             await controller.stop()
             try Task.checkCancellation()
-            controller.folderMounts = desired
+            controller.folderMounts = mounts
             await controller.start()
         }
         try Task.checkCancellation()
         switch controller.state {
         case .ready: return
-        case .failed(let message): throw AppLocalSearchError.index(message)
+        case .failed(let message):
+            // Keep the macOS refusal recognisable for the caller.
+            if message == SandboxError.folderAccessDenied.description { throw SandboxError.folderAccessDenied }
+            throw AppLocalSearchError.index(message)
         default: throw SandboxError.notReady
         }
     }

@@ -996,6 +996,88 @@ private struct StubReader: AppLocalFileReading {
         #expect(h.world.runningContainers.isEmpty)
     }
 
+    @Test func oneFolderMacOSRefusesIsLeftOutAndNamedWhileTheOthersAreRead() async throws {
+        let h = SandboxHarness.make(profile: .files)
+        let made = try folders(3)
+        defer { h.cleanUp(); try? FileManager.default.removeItem(at: made.base) }
+        h.world.refusedMountPaths = ["/F1,"]
+        let service = makeService(h)
+        let blocked = try await service.ensureRunning(for: made.folders)
+        let refusedID = made.folders[1].id.uuidString.lowercased()
+        #expect(Array(blocked.keys) == [refusedID])
+        let message = blocked[refusedID] ?? ""
+        #expect(message.contains("F1"))
+        #expect(message.contains("container-runtime-linux"))
+        #expect(!message.contains("F0"))
+        let expected = [made.folders[0], made.folders[2]].map { $0.id.uuidString.lowercased() }.sorted()
+        #expect(h.controller.state == .ready)
+        #expect(h.controller.activeMountIDs == expected)
+        #expect(h.world.runningContainers.count == 1)
+        // Allowed since: the next call reads all three.
+        h.world.refusedMountPaths = []
+        let allowed = try await service.ensureRunning(for: made.folders)
+        #expect(allowed.isEmpty)
+        #expect(h.controller.activeMountIDs.count == 3)
+        #expect(h.world.runningContainers.count == 1)
+    }
+
+    @Test func whenEveryFolderIsRefusedItThrowsAndNamesThemAndNothingRuns() async throws {
+        let h = SandboxHarness.make(profile: .files)
+        let made = try folders(2)
+        defer { h.cleanUp(); try? FileManager.default.removeItem(at: made.base) }
+        h.world.refusedMountPaths = ["/F0,", "/F1,"]
+        let service = makeService(h)
+        do {
+            try await service.ensureRunning(for: made.folders)
+            Issue.record("expected an error")
+        } catch {
+            let text = "\(error)"
+            #expect(text.contains("F0") && text.contains("F1"))
+            #expect(text.contains("container-runtime-linux"))
+        }
+        #expect(h.world.runningContainers.isEmpty)
+    }
+
+    @Test func aSingleRefusedFolderIsNamed() async throws {
+        let h = SandboxHarness.make(profile: .files)
+        let made = try folders(1)
+        defer { h.cleanUp(); try? FileManager.default.removeItem(at: made.base) }
+        h.world.refusedMountPaths = ["/F0,"]
+        let service = makeService(h)
+        do {
+            try await service.ensureRunning(for: made.folders)
+            Issue.record("expected an error")
+        } catch {
+            #expect("\(error)".contains("F0"))
+            #expect("\(error)".contains("Files and Folders"))
+        }
+        #expect(h.world.count("run") == 1)
+    }
+
+    @Test func tooManyFoldersAreNotTriedOneByOne() async throws {
+        let h = SandboxHarness.make(profile: .files)
+        let made = try folders(SandboxFilesService.maximumProbes + 1)
+        defer { h.cleanUp(); try? FileManager.default.removeItem(at: made.base) }
+        h.world.refusedMountPaths = ["/F3,"]
+        let service = makeService(h)
+        do {
+            try await service.ensureRunning(for: made.folders)
+            Issue.record("expected an error")
+        } catch {
+            #expect("\(error)".contains("container-runtime-linux"))
+        }
+        #expect(h.world.count("run") == 1)
+        #expect(h.world.runningContainers.isEmpty)
+    }
+
+    @Test func theRefusalOfTheVirtualMachineFrameworkIsRecognised() {
+        let detail = "Error: failed to bootstrap container (cause: VZErrorDomain Code=2 "
+            + "\"A directory sharing device configuration is invalid.\")"
+        let error = SandboxError.containerCommandFailed(action: "start the sandbox", detail: detail)
+        #expect(SandboxController.folderAccessProblem(in: error, mounts: [mount()]) == .folderAccessDenied)
+        #expect(SandboxController.folderAccessProblem(in: error, mounts: []) == nil)
+    }
+
     @Test func aFailedStartIsReportedAndNothingKeepsRunning() async throws {
         let h = SandboxHarness.make(profile: .files)
         let made = try folders(1)

@@ -94,7 +94,10 @@ second sandbox, a VM with **no network at all**, instead of by TUFF:
 - macOS asks whether `container-runtime-linux` may read folders such as
   Documents or Desktop. Allow it, or file search cannot read that folder; the
   message under the folder says where to change it (**System Settings > Privacy
-  & Security > Files and Folders**). A folder whose path contains a comma or a
+  & Security > Files and Folders**). If macOS refuses one folder, the other
+  folders are still read (TUFF finds the folder by starting the VM with each
+  one alone, up to 8 folders; with more, none is read and the message names
+  the folders in Documents, Desktop, Downloads and similar places). A folder whose path contains a comma or a
   line break cannot be mounted and is reported as such. Your home folder, or a
   folder that contains it, is refused (it would hand the VM your keys and app
   data); add the folders inside it. At most 64 folders are mounted.
@@ -113,3 +116,8 @@ Before an image is published, run a locally built one: build it with
 the image's index digest (`container image inspect tuff-sandbox:dev`, the
 `configuration.descriptor.digest` field). TUFF checks that the local image has
 exactly that digest and never pulls it.
+
+When a `container` command fails, its whole output goes to standard error
+(visible when TUFF is started from Terminal) and to the unified log
+(subsystem `TUFF`, folder paths private); the message in the settings keeps
+only the last lines.

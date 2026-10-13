@@ -45,6 +45,9 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
     /// `"version"`, `"codesign"`, `"system status"`, `"system start"`, `"list"`, `"run"`, `"stop"`, `"delete"`,
     /// `"exec nft"`, `"exec python3"`, `"image inspect"`, `"image pull"`, `"logs"`.
     var failures: [String: SandboxProcessResult] = [:]
+    /// Folders (path fragments) macOS refuses: a `container run` that mounts
+    /// one of them fails the way the virtual machine framework reports it.
+    var refusedMountPaths: Set<String> = []
     /// Containers that stay in the list after `stop` and `delete`.
     var undeletable: Set<String> = []
     /// Awaited inside `container run`, before the container exists.
@@ -135,6 +138,20 @@ final class FakeContainerWorld: SandboxProcessRunning, @unchecked Sendable {
         if command == "run", let gate = beforeRun { await gate() }
         if command == "system start", let gate = beforeSystemStart { await gate() }
         if let failure = lock.withLock({ failures[command] }) { return failure }
+        if command == "run" {
+            let refused = lock.withLock { refusedMountPaths }
+            let mounted = call.arguments.enumerated().filter { $0.element == "--mount" }
+                .compactMap { call.arguments.indices.contains($0.offset + 1) ? call.arguments[$0.offset + 1] : nil }
+            if mounted.contains(where: { option in refused.contains { option.contains($0) } }) {
+                return SandboxProcessResult(status: 1, output: """
+                    [5/6] Unpacking init image
+                    Error: failed to bootstrap container (cause: Error Domain=VZErrorDomain Code=2 \
+                    "A directory sharing device configuration is invalid." UserInfo={NSUnderlyingError=\
+                    Error Domain=NSPOSIXErrorDomain Code=1 "Operation not permitted"})
+
+                    """)
+            }
+        }
         return answer(command, call)
     }
 

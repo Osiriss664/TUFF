@@ -250,6 +250,9 @@ public final class AppToolStore {
             await maintenance?.value
             guard !Task.isCancelled else { return }
             #if os(macOS)
+            // Folders macOS did not let the sandbox read: left out, with the
+            // reason, while the others are indexed.
+            var blockedFolders: [String: String] = [:]
             if let sandboxService {
                 // The sandbox runs with exactly these folders mounted before
                 // any file is read. Starting it can take a while: indexing
@@ -259,7 +262,7 @@ public final class AppToolStore {
                     self?.indexingFolderID = folders.first?.id
                 }
                 do {
-                    try await sandboxService.ensureRunning(for: folders)
+                    blockedFolders = try await sandboxService.ensureRunning(for: folders)
                 } catch {
                     let message = error is CancellationError ? nil : "\(error)"
                     await MainActor.run {
@@ -280,6 +283,17 @@ public final class AppToolStore {
             #endif
             for folder in folders {
                 guard !Task.isCancelled else { break }
+                #if os(macOS)
+                if let message = blockedFolders[folder.id.uuidString.lowercased()] {
+                    await MainActor.run {
+                        guard self?.indexRunID == runID else { return }
+                        var status = self?.folderStatus[folder.id] ?? AppIndexFolderStatus()
+                        status.lastError = message
+                        self?.folderStatus[folder.id] = status
+                    }
+                    continue
+                }
+                #endif
                 await MainActor.run {
                     guard self?.indexRunID == runID else { return }
                     self?.indexingFolderID = folder.id

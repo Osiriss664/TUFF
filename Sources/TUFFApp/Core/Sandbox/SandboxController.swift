@@ -396,7 +396,11 @@ public final class SandboxController {
                                                 mounts: [SandboxFolderMount]) -> SandboxError? {
         guard !mounts.isEmpty, case .containerCommandFailed(_, let detail) = error else { return nil }
         let lowered = detail.lowercased()
-        guard ["not permitted", "permission denied", "operation not allowed", "not authorized"]
+        // "A directory sharing device configuration is invalid" is what the
+        // virtual machine framework says when macOS refused the share
+        // (underlying "Operation not permitted").
+        guard ["not permitted", "permission denied", "operation not allowed", "not authorized",
+               "directory sharing"]
             .contains(where: { lowered.contains($0) }) else { return nil }
         return .folderAccessDenied
     }
