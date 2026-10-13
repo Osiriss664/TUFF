@@ -90,7 +90,11 @@ second sandbox, a VM with **no network at all**, instead of by TUFF:
 - There is **no fallback**. If the VM cannot start, indexing stops with the
   reason shown under the folder, and TUFF does not read the files itself.
   Turning the switch on or off re-reads the folders with the other reader;
-  unchanged files are not read again.
+  unchanged files are not read again. As without the sandbox, TUFF looks for
+  new and changed files when you press **Update Index** and when the folders
+  or the setting change, not while you edit files. If the VM stopped
+  answering (for example after it crashed), the next update notices and
+  cleans up, and the one after starts it again.
 - macOS asks whether `container-runtime-linux` may read folders such as
   Documents or Desktop. Allow it, or file search cannot read that folder; the
   message under the folder says where to change it (**System Settings > Privacy
